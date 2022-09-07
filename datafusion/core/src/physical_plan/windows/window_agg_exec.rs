@@ -322,3 +322,126 @@ impl RecordBatchStream for WindowAggStream {
         self.schema.clone()
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::Float32Array;
+    use arrow::datatypes::{DataType, Field};
+    use arrow::util::pretty;
+    use datafusion_common::from_slice::FromSlice;
+    use datafusion_common::ScalarValue;
+    use crate::assert_batches_eq;
+    use crate::dataframe::DataFrame;
+    use crate::datasource::MemTable;
+    use crate::prelude::{SessionConfig, SessionContext};
+
+
+    fn create_ctx() -> SessionContext {
+        // define a schema.
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float32, false)]));
+
+        // define data in two partitions
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Float32Array::from_slice(&[1.0, 2.0, 3., 4.0, 5., 6., 7., 8.0]))],
+        ).unwrap();
+
+        let batch_2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Float32Array::from_slice(&[9., 10., 11., 12., 13., 14., 15., 16., 17.]))],
+        ).unwrap();
+        let ctx = SessionContext::new();
+        // declare a new context. In spark API, this corresponds to a new spark SQLsession
+        // declare a table in memory. In spark API, this corresponds to createDataFrame(...).
+        let provider = MemTable::try_new(schema.clone(), vec![vec![batch], vec![batch_2]]).unwrap();
+        // Register table
+        ctx.register_table("t", Arc::new(provider)).unwrap();
+        ctx
+    }
+
+    #[tokio::test]
+    async fn window_frame_empty() -> Result<()> {
+        let ctx = create_ctx();
+
+        // execute the query
+        let df = ctx
+            .sql(
+                "SELECT SUM(a) OVER() as summ, COUNT(*) OVER () as cnt FROM t"
+            )
+            .await?;
+
+        //let df = df.explain(false, false)?;
+        let batches = df.collect().await?;
+        pretty::print_batches(&batches).expect("TODO: panic message");
+        let expected = vec![
+            "+------+-----+",
+            "| summ | cnt |",
+            "+------+-----+",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "+------+-----+"
+        ];
+        // The output order is important as SMJ preserves sortedness
+        assert_batches_eq!(expected, &batches);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn window_frame_rows_preceding() -> Result<()> {
+        let ctx = create_ctx();
+
+        // execute the query
+        let df = ctx
+            .sql(
+                "SELECT SUM(a) OVER(ROWS 3 PRECEDING) as summ, COUNT(*) OVER (ROWS 5 PRECEDING) as cnt FROM t"
+            )
+            .await?;
+
+        //let df = df.explain(false, false)?;
+        let batches = df.collect().await?;
+        pretty::print_batches(&batches).expect("TODO: panic message");
+        let expected = vec![
+            "+------+-----+",
+            "| summ | cnt |",
+            "+------+-----+",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "| 153  | 17  |",
+            "+------+-----+"
+        ];
+        // The output order is important as SMJ preserves sortedness
+        assert_batches_eq!(expected, &batches);
+        Ok(())
+    }
+}
