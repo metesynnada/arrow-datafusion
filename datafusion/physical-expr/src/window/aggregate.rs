@@ -70,7 +70,8 @@ impl AggregateWindowExpr {
     fn create_accumulator(&self) -> Result<AggregateWindowAccumulator> {
         let accumulator = self.aggregate.create_accumulator()?;
         let window_frame= self.window_frame;
-        Ok(AggregateWindowAccumulator { accumulator, window_frame })
+        let evaluation_mode = self.evaluation_mode();
+        Ok(AggregateWindowAccumulator { evaluation_mode, accumulator, window_frame })
     }
 
     /// peer based evaluation based on the fact that batch is pre-sorted given the sort columns
@@ -113,8 +114,10 @@ impl AggregateWindowExpr {
         let num_rows = batch.num_rows();
         let partition_points =
             self.evaluate_partition_points(num_rows, &self.partition_columns(batch)?)?;
+        // Sort values, this will make the same partitions consecutive.
         let sort_partition_points =
             self.evaluate_partition_points(num_rows, &self.sort_columns(batch)?)?;
+        // Get necessary column.
         let values = self.evaluate_args(batch)?;
         let results = partition_points
             .iter()
@@ -174,8 +177,21 @@ impl WindowExpr for AggregateWindowExpr {
 }
 
 
-fn rows_slice_values(){
 
+fn row_frame_to_scalar_bounds(window_frame: &Option<WindowFrame>) -> (usize, usize){
+    let preceding: usize = match window_frame.unwrap().start_bound {
+        WindowFrameBound::Preceding(None) => usize::try_from(0).unwrap(),
+        WindowFrameBound::Preceding(Some(n)) => usize::try_from(n).unwrap(),
+        _ => panic!("sa")
+    };
+
+    let following: usize = match window_frame.unwrap().end_bound {
+        WindowFrameBound::CurrentRow => usize::try_from(0).unwrap(),
+        WindowFrameBound::Following(None) => usize::try_from(0).unwrap(),
+        WindowFrameBound::Following(Some(n)) => usize::try_from(n).unwrap(),
+        _ => panic!("sa")
+    };
+    (preceding, following)
 }
 
 /// Aggregate window accumulator utilizes the accumulator from aggregation and do a accumulative sum
@@ -183,13 +199,53 @@ fn rows_slice_values(){
 #[derive(Debug)]
 struct AggregateWindowAccumulator {
     accumulator: Box<dyn Accumulator>,
-    window_frame: Option<WindowFrame>
+    window_frame: Option<WindowFrame>,
+    evaluation_mode: WindowFrameUnits,
 }
 
 impl AggregateWindowAccumulator {
     /// scan one peer group of values (as arguments to window function) given by the value_range
     /// and return evaluation result that are of the same number of rows.
-    fn scan_peers(
+    ///
+    fn scan_peers(&mut self,
+                  values: &[ArrayRef],
+                  value_range: &Range<usize>) -> Result<ArrayRef> {
+        match self.evaluation_mode {
+            WindowFrameUnits::Range => self.scan_peers_range(values, value_range),
+            WindowFrameUnits::Rows => self.scan_peers_row(values, value_range),
+            WindowFrameUnits::Groups => self.scan_peers_group(values, value_range),
+        }
+    }
+    fn scan_peers_group(
+        &mut self,
+        _values: &[ArrayRef],
+        _value_range: &Range<usize>,
+    ) -> Result<ArrayRef> {
+        Err(DataFusionError::NotImplemented(format!(
+            "Group based evaluation for is not yet implemented",
+        )))
+    }
+    fn scan_peers_range(
+        &mut self,
+        values: &[ArrayRef],
+        value_range: &Range<usize>,
+    ) -> Result<ArrayRef> {
+        if value_range.is_empty() {
+            return Err(DataFusionError::Internal(
+                "Value range cannot be empty".to_owned(),
+            ));
+        }
+        let len = value_range.end - value_range.start;
+        let values = values
+            .iter()
+            .map(|v| v.slice(value_range.start, len))
+            .collect::<Vec<_>>();
+        self.accumulator.update_batch(&values)?;
+        let value = self.accumulator.evaluate()?;
+        Ok(value.to_array_of_size(len))
+    }
+
+    fn scan_peers_row(
         &mut self,
         values: &[ArrayRef],
         value_range: &Range<usize>,
@@ -203,28 +259,12 @@ impl AggregateWindowAccumulator {
         let values = values
             .iter()
             .map(|v| {
-                println!("{:?}", v);
                 v.slice(value_range.start, len)
             })
             .collect::<Vec<_>>();
 
-        let preceding: Option<u64> = match self.window_frame.unwrap().start_bound {
-            WindowFrameBound::Preceding(None) => Some(0),
-            WindowFrameBound::Preceding(Some(n)) => Some(n),
-            _ => panic!("Hatali alis")
-        };
-
-        let preceding = usize::try_from(preceding.unwrap()).unwrap();
-
-        let following: Option<u64> = match self.window_frame.unwrap().end_bound {
-            WindowFrameBound::CurrentRow => Some(0),
-            WindowFrameBound::Following(None) => Some(0),
-            WindowFrameBound::Following(Some(n)) => Some(n),
-            _ => panic!("Hatali alis")
-        };
-        let following = usize::try_from(following.unwrap()).unwrap();
+        let (preceding, following): (usize, usize) = row_frame_to_scalar_bounds(&self.window_frame);
         let mut scalar_iter = vec![];
-        println!("{:?}", values);
         let mut last_range: (usize, usize)= (0,0);
         for i in 0..values[0].len() {
             let mut start = match i >= preceding {
@@ -234,9 +274,7 @@ impl AggregateWindowAccumulator {
             let mut end = min(i+following+1, values[0].len());
             let mut cur_range = (start, end);
             self.accumulator.update_batch(&[values.get(0).unwrap().slice(last_range.1, cur_range.1 - last_range.1)]).expect("TODO: panic message");
-            println!("After update{:?}", self.accumulator.state());
             self.accumulator.retract_batch(&[values.get(0).unwrap().slice(last_range.0, cur_range.0 - last_range.0)]).expect("TODO: panic message");
-            println!("After retract{:?}", self.accumulator.state());
             last_range = cur_range;
             scalar_iter.push(self.accumulator.evaluate()?);
         }
