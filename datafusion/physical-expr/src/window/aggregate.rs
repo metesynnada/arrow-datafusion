@@ -273,8 +273,16 @@ impl AggregateWindowAccumulator {
             };
             let mut end = min(i+following+1, values[0].len());
             let mut cur_range = (start, end);
-            self.accumulator.update_batch(&[values.get(0).unwrap().slice(last_range.1, cur_range.1 - last_range.1)]).expect("TODO: panic message");
-            self.accumulator.retract_batch(&[values.get(0).unwrap().slice(last_range.0, cur_range.0 - last_range.0)]).expect("TODO: panic message");
+
+            let update: Vec<ArrayRef> = values.iter().map(|v| {
+                v.slice(last_range.1, cur_range.1 - last_range.1)
+            }).collect();
+            let retract: Vec<ArrayRef> = values.iter().map(|v| {
+                v.slice(last_range.0, cur_range.0 - last_range.0)
+            }).collect();
+
+            self.accumulator.update_batch(&update).expect("TODO: panic message");
+            self.accumulator.retract_batch(&retract).expect("TODO: panic message");
             last_range = cur_range;
             scalar_iter.push(self.accumulator.evaluate()?);
         }
