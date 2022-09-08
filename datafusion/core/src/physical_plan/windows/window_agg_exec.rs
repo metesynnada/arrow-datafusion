@@ -368,7 +368,7 @@ mod tests {
         // execute the query
         let df = ctx
             .sql(
-                "SELECT SUM(a) OVER(PARTITION BY a) as summ, COUNT(*) OVER () as cnt FROM t"
+                "SELECT SUM(a) OVER() as summ, COUNT(*) OVER () as cnt FROM t"
             )
             .await?;
 
