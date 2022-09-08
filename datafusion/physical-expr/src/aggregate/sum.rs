@@ -206,6 +206,18 @@ macro_rules! typed_sum {
     }};
 }
 
+// returns the sum of two scalar values, including coercion into $TYPE.
+macro_rules! typed_subtraction {
+    ($OLD_VALUE:expr, $DELTA:expr, $SCALAR:ident, $TYPE:ident) => {{
+        ScalarValue::$SCALAR(match ($OLD_VALUE, $DELTA) {
+            (None, None) => None,
+            (Some(a), None) => Some(a.clone()),
+            (None, Some(b)) => Some(b.clone() as $TYPE),
+            (Some(a), Some(b)) => Some(a - (*b as $TYPE)),
+        })
+    }};
+}
+
 macro_rules! sum_row {
     ($INDEX:ident, $ACC:ident, $DELTA:expr, $TYPE:ident) => {{
         paste::item! {
@@ -352,6 +364,100 @@ pub(crate) fn sum(lhs: &ScalarValue, rhs: &ScalarValue) -> Result<ScalarValue> {
     })
 }
 
+pub(crate) fn sub(lhs: &ScalarValue, rhs: &ScalarValue) -> Result<ScalarValue> {
+    Ok(match (lhs, rhs) {
+        (ScalarValue::Decimal128(v1, p1, s1), ScalarValue::Decimal128(v2, p2, s2)) => {
+            let max_precision = *p1.max(p2);
+            if s1.eq(s2) {
+                // s1 = s2
+                sum_decimal(v1, v2, max_precision, *s1)
+            } else if s1.gt(s2) {
+                // s1 > s2
+                sum_decimal_with_diff_scale(v1, v2, max_precision, *s1, *s2)
+            } else {
+                // s1 < s2
+                sum_decimal_with_diff_scale(v2, v1, max_precision, *s2, *s1)
+            }
+        }
+        // float64 coerces everything to f64
+        (ScalarValue::Float64(lhs), ScalarValue::Float64(rhs)) => {
+            typed_subtraction!(lhs, rhs, Float64, f64)
+        }
+        (ScalarValue::Float64(lhs), ScalarValue::Float32(rhs)) => {
+            typed_subtraction!(lhs, rhs, Float64, f64)
+        }
+        (ScalarValue::Float64(lhs), ScalarValue::Int64(rhs)) => {
+            typed_subtraction!(lhs, rhs, Float64, f64)
+        }
+        (ScalarValue::Float64(lhs), ScalarValue::Int32(rhs)) => {
+            typed_subtraction!(lhs, rhs, Float64, f64)
+        }
+        (ScalarValue::Float64(lhs), ScalarValue::Int16(rhs)) => {
+            typed_subtraction!(lhs, rhs, Float64, f64)
+        }
+        (ScalarValue::Float64(lhs), ScalarValue::Int8(rhs)) => {
+            typed_subtraction!(lhs, rhs, Float64, f64)
+        }
+        (ScalarValue::Float64(lhs), ScalarValue::UInt64(rhs)) => {
+            typed_subtraction!(lhs, rhs, Float64, f64)
+        }
+        (ScalarValue::Float64(lhs), ScalarValue::UInt32(rhs)) => {
+            typed_subtraction!(lhs, rhs, Float64, f64)
+        }
+        (ScalarValue::Float64(lhs), ScalarValue::UInt16(rhs)) => {
+            typed_subtraction!(lhs, rhs, Float64, f64)
+        }
+        (ScalarValue::Float64(lhs), ScalarValue::UInt8(rhs)) => {
+            typed_subtraction!(lhs, rhs, Float64, f64)
+        }
+        // float32 has no cast
+        (ScalarValue::Float32(lhs), ScalarValue::Float32(rhs)) => {
+            typed_subtraction!(lhs, rhs, Float32, f32)
+        }
+        // u64 coerces u* to u64
+        (ScalarValue::UInt64(lhs), ScalarValue::UInt64(rhs)) => {
+            typed_subtraction!(lhs, rhs, UInt64, u64)
+        }
+        (ScalarValue::UInt64(lhs), ScalarValue::UInt32(rhs)) => {
+            typed_subtraction!(lhs, rhs, UInt64, u64)
+        }
+        (ScalarValue::UInt64(lhs), ScalarValue::UInt16(rhs)) => {
+            typed_subtraction!(lhs, rhs, UInt64, u64)
+        }
+        (ScalarValue::UInt64(lhs), ScalarValue::UInt8(rhs)) => {
+            typed_subtraction!(lhs, rhs, UInt64, u64)
+        }
+        // i64 coerces i* to i64
+        (ScalarValue::Int64(lhs), ScalarValue::Int64(rhs)) => {
+            typed_subtraction!(lhs, rhs, Int64, i64)
+        }
+        (ScalarValue::Int64(lhs), ScalarValue::Int32(rhs)) => {
+            typed_subtraction!(lhs, rhs, Int64, i64)
+        }
+        (ScalarValue::Int64(lhs), ScalarValue::Int16(rhs)) => {
+            typed_subtraction!(lhs, rhs, Int64, i64)
+        }
+        (ScalarValue::Int64(lhs), ScalarValue::Int8(rhs)) => {
+            typed_subtraction!(lhs, rhs, Int64, i64)
+        }
+        (ScalarValue::Int64(lhs), ScalarValue::UInt32(rhs)) => {
+            typed_subtraction!(lhs, rhs, Int64, i64)
+        }
+        (ScalarValue::Int64(lhs), ScalarValue::UInt16(rhs)) => {
+            typed_subtraction!(lhs, rhs, Int64, i64)
+        }
+        (ScalarValue::Int64(lhs), ScalarValue::UInt8(rhs)) => {
+            typed_subtraction!(lhs, rhs, Int64, i64)
+        }
+        e => {
+            return Err(DataFusionError::Internal(format!(
+                "Sum is not expected to receive a scalar {:?}",
+                e
+            )));
+        }
+    })
+}
+
 pub(crate) fn add_to_row(
     dt: &DataType,
     index: usize,
@@ -438,6 +544,13 @@ impl Accumulator for SumAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         let values = &values[0];
         self.sum = sum(&self.sum, &sum_batch(values, &self.sum.get_datatype())?)?;
+        Ok(())
+    }
+
+    fn retract_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        // TODO add all other Accumulators corresponding retract
+        let values = &values[0];
+        self.sum = sub(&self.sum, &sum_batch(values, &self.sum.get_datatype())?)?;
         Ok(())
     }
 

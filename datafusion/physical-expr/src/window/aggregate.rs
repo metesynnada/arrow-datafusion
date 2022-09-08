@@ -23,14 +23,17 @@ use crate::{window::WindowExpr, AggregateExpr};
 use arrow::compute::concat;
 use arrow::record_batch::RecordBatch;
 use arrow::{array::ArrayRef, datatypes::Field};
-use datafusion_common::DataFusionError;
+use datafusion_common::{DataFusionError, ScalarValue};
 use datafusion_common::Result;
-use datafusion_expr::Accumulator;
+use datafusion_expr::{Accumulator, WindowFrameBound};
 use datafusion_expr::{WindowFrame, WindowFrameUnits};
 use std::any::Any;
+use std::cmp::{max, min};
+use std::fmt::Display;
 use std::iter::IntoIterator;
 use std::ops::Range;
 use std::sync::Arc;
+use arrow::array::Array;
 
 /// A window expr that takes the form of an aggregate function
 #[derive(Debug)]
@@ -66,7 +69,8 @@ impl AggregateWindowExpr {
     /// create a new accumulator based on the underlying aggregation function
     fn create_accumulator(&self) -> Result<AggregateWindowAccumulator> {
         let accumulator = self.aggregate.create_accumulator()?;
-        Ok(AggregateWindowAccumulator { accumulator })
+        let window_frame= self.window_frame;
+        Ok(AggregateWindowAccumulator { accumulator, window_frame })
     }
 
     /// peer based evaluation based on the fact that batch is pre-sorted given the sort columns
@@ -105,11 +109,31 @@ impl AggregateWindowExpr {
         )))
     }
 
-    fn row_based_evaluate(&self, _batch: &RecordBatch) -> Result<ArrayRef> {
-        Err(DataFusionError::NotImplemented(format!(
-            "Row based evaluation for {} is not yet implemented",
-            self.name()
-        )))
+    fn row_based_evaluate(&self, batch: &RecordBatch) -> Result<ArrayRef> {
+        let num_rows = batch.num_rows();
+        let partition_points =
+            self.evaluate_partition_points(num_rows, &self.partition_columns(batch)?)?;
+        let sort_partition_points =
+            self.evaluate_partition_points(num_rows, &self.sort_columns(batch)?)?;
+        let values = self.evaluate_args(batch)?;
+        let results = partition_points
+            .iter()
+            .map(|partition_range| {
+                let sort_partition_points =
+                    find_ranges_in_range(partition_range, &sort_partition_points);
+
+                let mut window_accumulators = self.create_accumulator()?;
+                sort_partition_points
+                    .iter()
+                    .map(|range| {window_accumulators.scan_peers(&values, range)})
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<Vec<ArrayRef>>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<ArrayRef>>();
+        let results = results.iter().map(|i| i.as_ref()).collect::<Vec<_>>();
+        concat(&results).map_err(DataFusionError::ArrowError)
     }
 }
 
@@ -149,11 +173,17 @@ impl WindowExpr for AggregateWindowExpr {
     }
 }
 
+
+fn rows_slice_values(){
+
+}
+
 /// Aggregate window accumulator utilizes the accumulator from aggregation and do a accumulative sum
 /// across evaluation arguments based on peer equivalences.
 #[derive(Debug)]
 struct AggregateWindowAccumulator {
     accumulator: Box<dyn Accumulator>,
+    window_frame: Option<WindowFrame>
 }
 
 impl AggregateWindowAccumulator {
@@ -172,10 +202,46 @@ impl AggregateWindowAccumulator {
         let len = value_range.end - value_range.start;
         let values = values
             .iter()
-            .map(|v| v.slice(value_range.start, len))
+            .map(|v| {
+                println!("{:?}", v);
+                v.slice(value_range.start, len)
+            })
             .collect::<Vec<_>>();
-        self.accumulator.update_batch(&values)?;
-        let value = self.accumulator.evaluate()?;
-        Ok(value.to_array_of_size(len))
+
+        let preceding: Option<u64> = match self.window_frame.unwrap().start_bound {
+            WindowFrameBound::Preceding(None) => Some(0),
+            WindowFrameBound::Preceding(Some(n)) => Some(n),
+            _ => panic!("Hatali alis")
+        };
+
+        let preceding = usize::try_from(preceding.unwrap()).unwrap();
+
+        let following: Option<u64> = match self.window_frame.unwrap().end_bound {
+            WindowFrameBound::CurrentRow => Some(0),
+            WindowFrameBound::Following(None) => Some(0),
+            WindowFrameBound::Following(Some(n)) => Some(n),
+            _ => panic!("Hatali alis")
+        };
+        let following = usize::try_from(following.unwrap()).unwrap();
+        let mut scalar_iter = vec![];
+        println!("{:?}", values);
+        let mut last_range: (usize, usize)= (0,0);
+        for i in 0..values[0].len() {
+            let mut start = match i >= preceding {
+                true => i - preceding,
+                false => 0
+            };
+            let mut end = min(i+following+1, values[0].len());
+            let mut cur_range = (start, end);
+            self.accumulator.update_batch(&[values.get(0).unwrap().slice(last_range.1, cur_range.1 - last_range.1)]).expect("TODO: panic message");
+            println!("After update{:?}", self.accumulator.state());
+            self.accumulator.retract_batch(&[values.get(0).unwrap().slice(last_range.0, cur_range.0 - last_range.0)]).expect("TODO: panic message");
+            println!("After retract{:?}", self.accumulator.state());
+            last_range = cur_range;
+            scalar_iter.push(self.accumulator.evaluate()?);
+        }
+
+        let array = ScalarValue::iter_to_array(scalar_iter.into_iter());
+        array
     }
 }

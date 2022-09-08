@@ -43,6 +43,11 @@ pub trait Accumulator: Send + Sync + Debug {
 
     /// returns its value based on its current state.
     fn evaluate(&self) -> Result<ScalarValue>;
+
+    fn retract_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        // TODO add all other Accumulators corresponding retract
+        Ok(())
+    }
 }
 
 /// Representation of internal accumulator state. Accumulators can potentially have a mix of

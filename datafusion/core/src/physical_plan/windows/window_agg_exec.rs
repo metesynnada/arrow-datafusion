@@ -368,7 +368,7 @@ mod tests {
         // execute the query
         let df = ctx
             .sql(
-                "SELECT SUM(a) OVER() as summ, COUNT(*) OVER () as cnt FROM t"
+                "SELECT SUM(a) OVER(PARTITION BY a) as summ, COUNT(*) OVER () as cnt FROM t"
             )
             .await?;
 
@@ -410,7 +410,7 @@ mod tests {
         // execute the query
         let df = ctx
             .sql(
-                "SELECT SUM(a) OVER(ROWS 3 PRECEDING) as summ, COUNT(*) OVER (ROWS 5 PRECEDING) as cnt FROM t"
+                "SELECT SUM(a) OVER(ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING ) as summ FROM t"
             )
             .await?;
 
@@ -418,27 +418,27 @@ mod tests {
         let batches = df.collect().await?;
         pretty::print_batches(&batches).expect("TODO: panic message");
         let expected = vec![
-            "+------+-----+",
-            "| summ | cnt |",
-            "+------+-----+",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "| 153  | 17  |",
-            "+------+-----+"
+            "+------+",
+            "| summ |",
+            "+------+",
+            "| 3    |",
+            "| 6    |",
+            "| 9    |",
+            "| 12   |",
+            "| 15   |",
+            "| 18   |",
+            "| 21   |",
+            "| 24   |",
+            "| 27   |",
+            "| 30   |",
+            "| 33   |",
+            "| 36   |",
+            "| 39   |",
+            "| 42   |",
+            "| 45   |",
+            "| 48   |",
+            "| 33   |",
+            "+------+"
         ];
         // The output order is important as SMJ preserves sortedness
         assert_batches_eq!(expected, &batches);
