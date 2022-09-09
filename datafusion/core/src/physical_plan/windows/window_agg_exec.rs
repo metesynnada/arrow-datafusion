@@ -327,7 +327,7 @@ impl RecordBatchStream for WindowAggStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Float32Array;
+    use arrow::array::{Float32Array, Float64Array};
     use arrow::datatypes::{DataType, Field};
     use arrow::util::pretty;
     use datafusion_common::from_slice::FromSlice;
@@ -410,7 +410,7 @@ mod tests {
         // execute the query
         let df = ctx
             .sql(
-                "SELECT SUM(a) OVER(ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING ) as summ FROM t"
+                "SELECT SUM(a) OVER(ORDER by a RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING ) as summ FROM t"
             )
             .await?;
 
@@ -514,6 +514,48 @@ mod tests {
             "| 34   |",
             "| 34   |",
             "+------+"
+        ];
+        // The output order is important as SMJ preserves sortedness
+        assert_batches_eq!(expected, &batches);
+        Ok(())
+    }
+    #[tokio::test]
+    async fn window_frame_rows_preceding_multiple_columns() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float32, false), Field::new("b", DataType::Float32, false)]));
+
+        // define data in two partitions
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Float32Array::from_slice(&[1.0, 2.0, 3., 4., 5.])), Arc::new(Float32Array::from_slice(&[2.0, 1.,12.,5.,8.]))],
+        ).unwrap();
+
+        let ctx = SessionContext::new();
+        // declare a new context. In spark API, this corresponds to a new spark SQLsession
+        // declare a table in memory. In spark API, this corresponds to createDataFrame(...).
+        let provider = MemTable::try_new(schema.clone(), vec![vec![batch]]).unwrap();
+        // Register table
+        ctx.register_table("t", Arc::new(provider)).unwrap();
+
+        // execute the query
+        let df = ctx
+            .sql(
+                "SELECT corr(a,b) OVER(ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING ) as cor FROM t"
+            )
+            .await?;
+
+        //let df = df.explain(false, false)?;
+        let batches = df.collect().await?;
+        pretty::print_batches(&batches).expect("TODO: panic message");
+        let expected = vec![
+            +---------------------+
+            | cor                 |
+            +---------------------+
+            | -1                  |
+            | 0.8219949365267865  |
+            | 0.3592106040535498  |
+            | -0.5694947974514994 |
+            | 0.999999999999999   |
+            +---------------------+
         ];
         // The output order is important as SMJ preserves sortedness
         assert_batches_eq!(expected, &batches);

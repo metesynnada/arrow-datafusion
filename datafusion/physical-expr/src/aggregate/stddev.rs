@@ -188,6 +188,10 @@ impl Accumulator for StddevAccumulator {
         ])
     }
 
+    fn retract_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        self.variance.retract_batch(values)
+    }
+
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         self.variance.update_batch(values)
     }
