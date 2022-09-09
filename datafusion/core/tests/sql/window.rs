@@ -269,18 +269,8 @@ async fn window_partition_by_order_by() -> Result<()> {
         "SELECT \
         c1, \
         c2, \
-        ROW_NUMBER() OVER (PARTITION BY c2 ORDER BY c1), \
-        FIRST_VALUE(c2 + c1) OVER (PARTITION BY c2 ORDER BY c1), \
-        LAST_VALUE(c2 + c1) OVER (PARTITION BY c2 ORDER BY c1), \
-        NTH_VALUE(c2 + c1, 1) OVER (PARTITION BY c2 ORDER BY c1), \
-        SUM(c2) OVER (PARTITION BY c2 ORDER BY c1), \
-        COUNT(c2) OVER (PARTITION BY c2 ORDER BY c1), \
-        MAX(c2) OVER (PARTITION BY c2 ORDER BY c1), \
-        MIN(c2) OVER (PARTITION BY c2 ORDER BY c1), \
-        AVG(c2) OVER (PARTITION BY c2 ORDER BY c1) \
-        FROM test \
-        ORDER BY c1, c2 \
-        LIMIT 5",
+        SUM(c2) OVER (PARTITION BY c2 ORDER BY c1)
+        FROM test",
         4,
     )
     .await?;

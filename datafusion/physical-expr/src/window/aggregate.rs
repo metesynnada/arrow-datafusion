@@ -185,15 +185,16 @@ impl AggregateWindowExpr {
         let columns = self.sort_columns(batch)?;
         let array_refs: Vec<&ArrayRef> = columns.iter().map(| s | &s.values).collect();
         // Sort values, this will make the same partitions consecutive.
-        let sort_partition_points =
+        let sort_partition_point =
             self.evaluate_partition_points(num_rows, &columns)?;
-
+        println!("{:?}", values);
         let results = partition_points
             .iter()
             .map(|partition_range| {
                 let sort_partition_points =
-                    find_ranges_in_range(partition_range, &sort_partition_points);
+                    find_ranges_in_range(partition_range, &sort_partition_point);
                 let mut window_accumulators = self.create_accumulator()?;
+                println!("{:?}", &sort_partition_points);
                 let res = window_accumulators.scan_peers(&values, &array_refs, &sort_partition_points);
                 // res.unwrap()
                 Ok(vec![res.unwrap()])
@@ -222,9 +223,6 @@ impl AggregateWindowExpr {
         let num_rows = batch.num_rows();
         let partition_points =
             self.evaluate_partition_points(num_rows, &self.partition_columns(batch)?)?;
-        // Sort values, this will make the same partitions consecutive.
-        let sort_partition_points =
-            self.evaluate_partition_points(num_rows, &self.sort_columns(batch)?)?;
         // Get necessary column.
         let values = self.evaluate_args(batch)?;
 
@@ -330,6 +328,7 @@ fn range_frame_to_scalar_bounds(window: WindowFrame) -> (f64, f64) {
 }
 
 fn calc_cur_range(a: &Arc<dyn arrow::array::Array>, window: WindowFrame, len:usize, idx:usize) -> (usize, usize){
+    println!("{:?}", a);
     let start = match window.start_bound{
         // UNBOUNDED PRECEDING
         WindowFrameBound::Preceding(None) => {
@@ -364,6 +363,7 @@ fn calc_cur_range(a: &Arc<dyn arrow::array::Array>, window: WindowFrame, len:usi
         }
         WindowFrameBound::Following(Some(n)) => {
             let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
+            println!("{:?}", a);
             // let val = val as usize;
             // let start_range = val - n;
             let end_range = val + (n as f64);
@@ -446,6 +446,13 @@ impl AggregateWindowAccumulator {
             })
             .collect::<Vec<_>>();
 
+        let order_bys = order_bys
+            .iter()
+            .map(|v| {
+                v.slice(value_range.start, len)
+            })
+            .collect::<Vec<_>>();
+
         match order_bys.len() {
             0 => {
                 // // OVER() case and OVER(ORDER BY <field>) case
@@ -477,7 +484,9 @@ impl AggregateWindowAccumulator {
                         let mut scalar_iter = vec![];
                         let mut last_range: (usize, usize) = (0, 0);
                         let vec = &cast(&values[0], &arrow::datatypes::DataType::Float64)?;
-                        let use_during_range = &cast(order_bys[0], &arrow::datatypes::DataType::Float64)?;
+                        let use_during_range = &cast(&order_bys[1], &arrow::datatypes::DataType::Float64)?;
+                        println!("{:?}", order_bys);
+                        println!("{:?}", order_bys.len());
                         for i in 0..vec.len() {
                             let cur_range = calc_cur_range(&use_during_range, window, len, i);
 
@@ -487,11 +496,11 @@ impl AggregateWindowAccumulator {
                             let retract: Vec<ArrayRef> = values.iter().map(|v| {
                                 v.slice(last_range.0, cur_range.0 - last_range.0)
                             }).collect();
-
+                            println!("state: {:?}", &update);
                             self.accumulator.update_batch(&update).expect("TODO: panic message");
                             self.accumulator.retract_batch(&retract).expect("TODO: panic message");
                             last_range = cur_range;
-                            println!("state: {}", self.state);
+                            println!("state: {:?}", &self.accumulator.state());
                             scalar_iter.push(self.accumulator.evaluate()?);
                         }
 
