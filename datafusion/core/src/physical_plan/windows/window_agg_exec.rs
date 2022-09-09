@@ -327,7 +327,7 @@ impl RecordBatchStream for WindowAggStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Float32Array;
+    use arrow::array::{Float32Array, Int64Array};
     use arrow::datatypes::{DataType, Field};
     use arrow::util::pretty;
     use datafusion_common::from_slice::FromSlice;
@@ -345,7 +345,7 @@ mod tests {
         // define data in two partitions
         let batch = RecordBatch::try_new(
             schema.clone(),
-            vec![Arc::new(Float32Array::from_slice(&[1.0, 2.0, 3., 4.0, 5., 6., 7., 8.0]))],
+            vec![Arc::new(Float32Array::from_slice(&[2.0, 1.0, 3., 4.0, 5., 6., 7., 8.0]))],
         ).unwrap();
 
         let batch_2 = RecordBatch::try_new(
@@ -519,6 +519,116 @@ mod tests {
         assert_batches_eq!(expected, &batches);
         Ok(())
     }
+
+    #[tokio::test]
+    async fn window_frame_ranges_preceding_following() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float32, false)]));
+        // let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+
+        // define data in two partitions
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Float32Array::from_slice(&[1.0, 1.0, 2.0, 3.0]))],
+            // vec![Arc::new(Int64Array::from_slice(&[1, 1, 2, 3]))],
+        ).unwrap();
+
+        let batch_2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Float32Array::from_slice(&[5.0, 7.0]))],
+            // vec![Arc::new(Int64Array::from_slice(&[5, 7]))],
+        ).unwrap();
+        let ctx = SessionContext::new();
+        // declare a new context. In spark API, this corresponds to a new spark SQLsession
+        // declare a table in memory. In spark API, this corresponds to createDataFrame(...).
+
+        // let provider = MemTable::try_new(schema.clone(), vec![vec![batch.clone()],vec![batch.clone()], vec![batch_2.clone()], vec![batch_2.clone()]]).unwrap();
+        let provider = MemTable::try_new(schema.clone(), vec![vec![batch.clone()], vec![batch_2.clone()]]).unwrap();
+        // Register table
+        ctx.register_table("t", Arc::new(provider)).unwrap();
+
+        // execute the query
+        let df = ctx
+            .sql(
+                "SELECT SUM(a) OVER(ORDER BY a RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING ) as summ FROM t"
+                // "SELECT SUM(a) OVER(PARTITION BY a ORDER BY a) as summ FROM t"
+            )
+            .await?;
+
+        //let df = df.explain(false, false)?;
+        let batches = df.collect().await?;
+        pretty::print_batches(&batches).expect("TODO: panic message");
+        let expected = vec![
+            "+------+",
+            "| summ |",
+            "+------+",
+            "| 4    |",
+            "| 4    |",
+            "| 7    |",
+            "| 5    |",
+            "| 5    |",
+            "| 7    |",
+            "+------+"
+        ];
+        // The output order is important as SMJ preserves sortedness
+        assert_batches_eq!(expected, &batches);
+        Ok(())
+    }
+
+
+    #[tokio::test]
+    async fn window_frame_empty_inside() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float32, false)]));
+        // let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+
+        // define data in two partitions
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Float32Array::from_slice(&[1.0, 1.0, 2.0, 3.0]))],
+            // vec![Arc::new(Int64Array::from_slice(&[1, 1, 2, 3]))],
+        ).unwrap();
+
+        let batch_2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Float32Array::from_slice(&[5.0, 7.0]))],
+            // vec![Arc::new(Int64Array::from_slice(&[5, 7]))],
+        ).unwrap();
+        let ctx = SessionContext::new();
+        // declare a new context. In spark API, this corresponds to a new spark SQLsession
+        // declare a table in memory. In spark API, this corresponds to createDataFrame(...).
+
+        // let provider = MemTable::try_new(schema.clone(), vec![vec![batch.clone()],vec![batch.clone()], vec![batch_2.clone()], vec![batch_2.clone()]]).unwrap();
+        let provider = MemTable::try_new(schema.clone(), vec![vec![batch.clone()], vec![batch_2.clone()]]).unwrap();
+        // Register table
+        ctx.register_table("t", Arc::new(provider)).unwrap();
+
+        // execute the query
+        let df = ctx
+            .sql(
+                "SELECT SUM(a) OVER() as summ FROM t"
+                // "SELECT SUM(a) OVER(PARTITION BY a ORDER BY a) as summ FROM t"
+            )
+            .await?;
+
+        //let df = df.explain(false, false)?;
+        let batches = df.collect().await?;
+        pretty::print_batches(&batches).expect("TODO: panic message");
+        let expected = vec![
+            "+------+",
+            "| summ |",
+            "+------+",
+            "| 4    |",
+            "| 4    |",
+            "| 7    |",
+            "| 5    |",
+            "| 5    |",
+            "| 7    |",
+            "+------+"
+        ];
+        // The output order is important as SMJ preserves sortedness
+        assert_batches_eq!(expected, &batches);
+        Ok(())
+    }
+
 }
 
 
