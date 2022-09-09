@@ -168,8 +168,8 @@ impl AggregateWindowExpr {
     fn create_accumulator(&self) -> Result<AggregateWindowAccumulator> {
         let accumulator = self.aggregate.create_accumulator()?;
         let window_frame= self.window_frame;
-        let evaluation_mode = self.evaluation_mode();
-        Ok(AggregateWindowAccumulator { evaluation_mode, accumulator, window_frame })
+        let order_by = self.order_by().to_vec();
+        Ok(AggregateWindowAccumulator { accumulator, window_frame, order_by })
     }
 
     /// peer based evaluation based on the fact that batch is pre-sorted given the sort columns
@@ -179,16 +179,22 @@ impl AggregateWindowExpr {
         let num_rows = batch.num_rows();
         let partition_points =
             self.evaluate_partition_points(num_rows, &self.partition_columns(batch)?)?;
-        let sort_partition_points =
-            self.evaluate_partition_points(num_rows, &self.sort_columns(batch)?)?;
+        // let sort_partition_points = self.evaluate_partition_points(num_rows, &self.sort_columns(batch)?)?;
         let values = self.evaluate_args(batch)?;
+
+        let columns = self.sort_columns(batch)?;
+        let array_refs: Vec<&ArrayRef> = columns.iter().map(| s | &s.values).collect();
+        // Sort values, this will make the same partitions consecutive.
+        let sort_partition_points =
+            self.evaluate_partition_points(num_rows, &columns)?;
+
         let results = partition_points
             .iter()
             .map(|partition_range| {
                 let sort_partition_points =
                     find_ranges_in_range(partition_range, &sort_partition_points);
                 let mut window_accumulators = self.create_accumulator()?;
-                let res = window_accumulators.scan_peers(&values, &sort_partition_points);
+                let res = window_accumulators.scan_peers(&values, &array_refs, &sort_partition_points);
                 // res.unwrap()
                 Ok(vec![res.unwrap()])
 
@@ -221,6 +227,13 @@ impl AggregateWindowExpr {
             self.evaluate_partition_points(num_rows, &self.sort_columns(batch)?)?;
         // Get necessary column.
         let values = self.evaluate_args(batch)?;
+
+        let columns = self.sort_columns(batch)?;
+        let array_refs: Vec<&ArrayRef> = columns.iter().map(| s | &s.values).collect();
+        // Sort values, this will make the same partitions consecutive.
+        let sort_partition_points =
+            self.evaluate_partition_points(num_rows, &columns)?;
+
         let results = partition_points
             .iter()
             .map(|partition_range| {
@@ -229,7 +242,7 @@ impl AggregateWindowExpr {
 
                 let mut window_accumulators = self.create_accumulator()?;
 
-                let res = window_accumulators.scan_peers(&values, &sort_partition_points);
+                let res = window_accumulators.scan_peers(&values,&array_refs, &sort_partition_points);
                 // res.unwrap()
                 Ok(vec![res.unwrap()])
 
@@ -286,6 +299,7 @@ impl WindowExpr for AggregateWindowExpr {
 
 
 fn row_frame_to_scalar_bounds(window_frame: &Option<WindowFrame>) -> (usize, usize){
+    let res = window_frame.unwrap();
     let preceding: usize = match window_frame.unwrap().start_bound {
         WindowFrameBound::Preceding(None) => usize::try_from(0).unwrap(),
         WindowFrameBound::Preceding(Some(n)) => usize::try_from(n).unwrap(),
@@ -301,13 +315,86 @@ fn row_frame_to_scalar_bounds(window_frame: &Option<WindowFrame>) -> (usize, usi
     (preceding, following)
 }
 
+fn range_frame_to_scalar_bounds(window: WindowFrame) -> (f64, f64) {
+    let preceding = match window.start_bound {
+        WindowFrameBound::Preceding(None) => 0 as f64,
+        WindowFrameBound::Preceding(Some(n)) => n as f64,
+        _ => panic!("sa")
+    };
+    let following = match window.end_bound {
+        WindowFrameBound::Following(None) => 0 as f64,
+        WindowFrameBound::Following(Some(n)) => n as f64,
+        _ => panic!("sa")
+    };
+    (preceding, following)
+}
+
+fn calc_cur_range(a: &Arc<dyn arrow::array::Array>, window: WindowFrame, len:usize, idx:usize) -> (usize, usize){
+    let start = match window.start_bound{
+        // UNBOUNDED PRECEDING
+        WindowFrameBound::Preceding(None) => {
+            0
+        }
+        WindowFrameBound::Preceding(Some(n)) => {
+            let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
+            // let val = val as usize;
+            let start_range = val - (n as f64);
+            // let end_range = val + following;
+
+            let start = bisect_left_arrow(&a, len, start_range).unwrap();
+            start
+            // let mut end = bisect_right_arrow(&vec, len, end_range).unwrap();
+        }
+        WindowFrameBound::CurrentRow=>{
+            let n = 0;
+            let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
+            // let val = val as usize;
+            let start_range = val - (n as f64);
+            // let end_range = val + following;
+
+            let start = bisect_left_arrow(&a, len, start_range).unwrap();
+            start
+        }
+        _ => panic!("Invalid Frame bound")
+    };
+    let end = match window.end_bound{
+        // UNBOUNDED PRECEDING
+        WindowFrameBound::Following(None) => {
+            len
+        }
+        WindowFrameBound::Following(Some(n)) => {
+            let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
+            // let val = val as usize;
+            // let start_range = val - n;
+            let end_range = val + (n as f64);
+
+            // let start = bisect_left_arrow(&vec, len, start_range).unwrap();
+            let end = bisect_right_arrow(&a, len, end_range).unwrap();
+            end
+        }
+        WindowFrameBound::CurrentRow=>{
+            let n = 0;
+            let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
+            // let val = val as usize;
+            // let start_range = val - n;
+            let end_range = val + (n as f64);
+
+            // let start = bisect_left_arrow(&vec, len, start_range).unwrap();
+            let end = bisect_right_arrow(&a, len, end_range).unwrap();
+            end
+        }
+        _ => panic!("Invalid Frame bound")
+    };
+    (start, end)
+}
+
 /// Aggregate window accumulator utilizes the accumulator from aggregation and do a accumulative sum
 /// across evaluation arguments based on peer equivalences.
 #[derive(Debug)]
 struct AggregateWindowAccumulator {
     accumulator: Box<dyn Accumulator>,
     window_frame: Option<WindowFrame>,
-    evaluation_mode: WindowFrameUnits,
+    order_by: Vec<PhysicalSortExpr>
 }
 
 impl AggregateWindowAccumulator {
@@ -316,13 +403,18 @@ impl AggregateWindowAccumulator {
     ///
     fn scan_peers(&mut self,
                   values: &[ArrayRef],
+                  order_bys: &Vec<&ArrayRef>,
                   value_ranges: &[Range<usize>]) -> Result<ArrayRef> {
-        match self.evaluation_mode {
-            WindowFrameUnits::Range => self.scan_peers_range(values, value_ranges),
-            WindowFrameUnits::Rows => self.scan_peers_row(values, value_ranges),
-            WindowFrameUnits::Groups => self.scan_peers_group(values, value_ranges),
+        match self.window_frame{
+            None => self.scan_peers_range(values,order_bys, value_ranges),
+            Some(value) => match value.units {
+                WindowFrameUnits::Range => self.scan_peers_range(values, order_bys, value_ranges),
+                WindowFrameUnits::Rows => self.scan_peers_row(values, value_ranges),
+                WindowFrameUnits::Groups => self.scan_peers_group(values, value_ranges),
+            }
         }
     }
+
     fn scan_peers_group(
         &mut self,
         _values: &[ArrayRef],
@@ -335,6 +427,7 @@ impl AggregateWindowAccumulator {
     fn scan_peers_range(
         &mut self,
         values: &[ArrayRef],
+        order_bys: &Vec<&ArrayRef>,
         value_ranges: &[Range<usize>],
     ) -> Result<ArrayRef> {
 
@@ -353,40 +446,64 @@ impl AggregateWindowAccumulator {
             })
             .collect::<Vec<_>>();
 
-        let (preceding, following): (usize, usize) = row_frame_to_scalar_bounds(&self.window_frame);
-        let preceding = preceding as f64;
-        let following = following as f64;
-        let mut scalar_iter = vec![];
-        let mut last_range: (usize, usize) = (0, 0);
-        let vec = &cast(&values[0], &arrow::datatypes::DataType::Float64)?;
-        for i in 0..vec.len() {
-            println!("{:?}", vec.data_type());
-            let val = vec.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(i);
-            // let val = val as usize;
-            let start_range = val - preceding;
-            let end_range = val + following;
+        match order_bys.len() {
+            0 => {
+                // // OVER() case and OVER(ORDER BY <field>) case
+                self.accumulator.update_batch(&values)?;
+                let value = self.accumulator.evaluate()?;
+                Ok(value.to_array_of_size(len))
+            }
+            _ => {
+                if self.window_frame.is_none() {
+                    // OVER(ORDER BY <field>)  case
+                    let res = WindowFrame {
+                        units: WindowFrameUnits::Range,
+                        start_bound: WindowFrameBound::Preceding(None),
+                        end_bound: WindowFrameBound::Following(Some(0)),
+                    };
 
-            let mut start = bisect_left_arrow(&vec, len, start_range).unwrap();
-            let mut end = bisect_right_arrow(&vec, len, end_range).unwrap();
+                    self.window_frame = Some(res);
 
-            let mut cur_range = (start, end);
+                }
 
-            let update: Vec<ArrayRef> = values.iter().map(|v| {
-                v.slice(last_range.1, cur_range.1 - last_range.1)
-            }).collect();
-            let retract: Vec<ArrayRef> = values.iter().map(|v| {
-                v.slice(last_range.0, cur_range.0 - last_range.0)
-            }).collect();
+                match self.window_frame {
+                    None => {
+                        // // OVER() case and OVER(ORDER BY <field>) case
+                        self.accumulator.update_batch(&values)?;
+                        let value = self.accumulator.evaluate()?;
+                        Ok(value.to_array_of_size(len))
+                    }
+                    Some(window) => {
+                        let mut scalar_iter = vec![];
+                        let mut last_range: (usize, usize) = (0, 0);
+                        let vec = &cast(&values[0], &arrow::datatypes::DataType::Float64)?;
+                        let use_during_range = &cast(order_bys[0], &arrow::datatypes::DataType::Float64)?;
+                        for i in 0..vec.len() {
+                            let cur_range = calc_cur_range(&use_during_range, window, len, i);
 
-            self.accumulator.update_batch(&update).expect("TODO: panic message");
-            self.accumulator.retract_batch(&retract).expect("TODO: panic message");
-            last_range = cur_range;
-            scalar_iter.push(self.accumulator.evaluate()?);
+                            let update: Vec<ArrayRef> = values.iter().map(|v| {
+                                v.slice(last_range.1, cur_range.1 - last_range.1)
+                            }).collect();
+                            let retract: Vec<ArrayRef> = values.iter().map(|v| {
+                                v.slice(last_range.0, cur_range.0 - last_range.0)
+                            }).collect();
+
+                            self.accumulator.update_batch(&update).expect("TODO: panic message");
+                            self.accumulator.retract_batch(&retract).expect("TODO: panic message");
+                            last_range = cur_range;
+                            println!("state: {}", self.state);
+                            scalar_iter.push(self.accumulator.evaluate()?);
+                        }
+
+                        let array = ScalarValue::iter_to_array(scalar_iter.into_iter());
+                        // res.push(array)
+                        array
+                    }
+                }
+            }
         }
 
-        let array = ScalarValue::iter_to_array(scalar_iter.into_iter());
-        // res.push(array)
-        array
+
 
     }
 

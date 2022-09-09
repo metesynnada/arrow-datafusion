@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::util::pretty;
 use super::*;
 
 /// for window functions without order by the first, last, and nth function call does not make sense
@@ -256,7 +257,9 @@ async fn window_partition_by() -> Result<()> {
     ];
 
     // window function shall respect ordering
+    pretty::print_batches(&results);
     assert_batches_eq!(expected, &results);
+
     Ok(())
 }
 
@@ -295,6 +298,7 @@ async fn window_partition_by_order_by() -> Result<()> {
     ];
 
     // window function shall respect ordering
+    pretty::print_batches(&results);
     assert_batches_eq!(expected, &results);
     Ok(())
 }
