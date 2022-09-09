@@ -1,4 +1,3 @@
-@@ -1,634 +0,0 @@
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -369,7 +368,7 @@ mod tests {
         // execute the query
         let df = ctx
             .sql(
-                "SELECT SUM(a) OVER(PARTITION BY a) as summ, COUNT(*) OVER () as cnt FROM t"
+                "SELECT SUM(a) OVER() as summ, COUNT(*) OVER () as cnt FROM t"
             )
             .await?;
 
@@ -623,6 +622,123 @@ mod tests {
             "| 5    |",
             "| 5    |",
             "| 7    |",
+            "+------+"
+        ];
+        // The output order is important as SMJ preserves sortedness
+        assert_batches_eq!(expected, &batches);
+        Ok(())
+    }
+    #[tokio::test]
+    async fn window_frame_rows_preceding_multiple_columns() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float32, false), Field::new("b", DataType::Float32, false)]));
+
+        // define data in two partitions
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Float32Array::from_slice(&[1.0, 2.0, 3., 4., 5.])), Arc::new(Float32Array::from_slice(&[2.0, 1.,12.,5.,8.]))],
+        ).unwrap();
+
+        let ctx = SessionContext::new();
+        // declare a new context. In spark API, this corresponds to a new spark SQLsession
+        // declare a table in memory. In spark API, this corresponds to createDataFrame(...).
+        let provider = MemTable::try_new(schema.clone(), vec![vec![batch]]).unwrap();
+        // Register table
+        ctx.register_table("t", Arc::new(provider)).unwrap();
+
+        // execute the query
+        let df = ctx
+            .sql(
+                "SELECT corr(a,b) OVER(ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING ) as cor FROM t"
+            )
+            .await?;
+
+        //let df = df.explain(false, false)?;
+        let batches = df.collect().await?;
+        pretty::print_batches(&batches).expect("TODO: panic message");
+        let expected = vec![
+                "+---------------------+
+                | cor                 |
+                +---------------------+
+                | -1                  |
+                | 0.8219949365267865  |
+                | 0.3592106040535498  |
+                | -0.5694947974514994 |
+                | 0.999999999999999   |
+                +---------------------+"
+            ];
+        // The output order is important as SMJ preserves sortedness
+        assert_batches_eq!(expected, &batches);
+        Ok(())
+    }
+    #[tokio::test]
+    async fn window_frame_rows_preceding_with_partition() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float32, false)]));
+
+        // define data in two partitions
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Float32Array::from_slice(&[1.0, 2.0, 3., 4.0, 5., 6., 7., 8.0]))],
+        ).unwrap();
+
+        let batch_2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Float32Array::from_slice(&[9., 10., 11., 12., 13., 14., 15., 16., 17.]))],
+        ).unwrap();
+        let ctx = SessionContext::new();
+        // declare a new context. In spark API, this corresponds to a new spark SQLsession
+        // declare a table in memory. In spark API, this corresponds to createDataFrame(...).
+        let provider = MemTable::try_new(schema.clone(), vec![vec![batch.clone()],vec![batch.clone()], vec![batch_2.clone()], vec![batch_2.clone()]]).unwrap();
+        // Register table
+        ctx.register_table("t", Arc::new(provider)).unwrap();
+
+        // execute the query
+        let df = ctx
+            .sql(
+                "SELECT SUM(a) OVER(PARTITION BY a ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING ) as summ FROM t"
+            )
+            .await?;
+
+        //let df = df.explain(false, false)?;
+        let batches = df.collect().await?;
+        pretty::print_batches(&batches).expect("TODO: panic message");
+        let expected = vec![
+            "+------+",
+            "| summ |",
+            "+------+",
+            "| 2    |",
+            "| 2    |",
+            "| 4    |",
+            "| 4    |",
+            "| 6    |",
+            "| 6    |",
+            "| 8    |",
+            "| 8    |",
+            "| 10   |",
+            "| 10   |",
+            "| 12   |",
+            "| 12   |",
+            "| 14   |",
+            "| 14   |",
+            "| 16   |",
+            "| 16   |",
+            "| 18   |",
+            "| 18   |",
+            "| 20   |",
+            "| 20   |",
+            "| 22   |",
+            "| 22   |",
+            "| 24   |",
+            "| 24   |",
+            "| 26   |",
+            "| 26   |",
+            "| 28   |",
+            "| 28   |",
+            "| 30   |",
+            "| 30   |",
+            "| 32   |",
+            "| 32   |",
+            "| 34   |",
+            "| 34   |",
             "+------+"
         ];
         // The output order is important as SMJ preserves sortedness

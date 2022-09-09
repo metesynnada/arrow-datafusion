@@ -253,24 +253,16 @@ impl WindowExpr for AggregateWindowExpr {
         self
     }
 
-    fn name(&self) -> &str {
-        self.aggregate.name()
-    }
-
     fn field(&self) -> Result<Field> {
         self.aggregate.field()
     }
 
+    fn name(&self) -> &str {
+        self.aggregate.name()
+    }
+
     fn expressions(&self) -> Vec<Arc<dyn PhysicalExpr>> {
         self.aggregate.expressions()
-    }
-
-    fn partition_by(&self) -> &[Arc<dyn PhysicalExpr>] {
-        &self.partition_by
-    }
-
-    fn order_by(&self) -> &[PhysicalSortExpr] {
-        &self.order_by
     }
 
     /// evaluate the window function values against the batch
@@ -280,6 +272,14 @@ impl WindowExpr for AggregateWindowExpr {
             WindowFrameUnits::Rows => self.row_based_evaluate(batch),
             WindowFrameUnits::Groups => self.group_based_evaluate(batch),
         }
+    }
+
+    fn partition_by(&self) -> &[Arc<dyn PhysicalExpr>] {
+        &self.partition_by
+    }
+
+    fn order_by(&self) -> &[PhysicalSortExpr] {
+        &self.order_by
     }
 }
 
