@@ -56,7 +56,7 @@ fn main (){
 
     let res: usize = bisect_left_arrow(order_columns, k).unwrap();
     // define data in two partitions
-    println!("{:?}", res);
+    assert_eq!(res, 2)
 }
 
 #[cfg(test)]
