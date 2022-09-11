@@ -56,7 +56,9 @@ fn main (){
 
     let res: usize = bisect_left_arrow(order_columns, k).unwrap();
     // define data in two partitions
-    assert_eq!(res, 2)
+    assert_eq!(res, 2);
+
+
 }
 
 #[cfg(test)]
@@ -67,8 +69,20 @@ mod tests {
     use arrow::compute::cast;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
+    use datafusion_common::ScalarValue;
+    use datafusion_common::ScalarValue::Null;
+
     #[tokio::test]
     async fn test_me() {
         main();
+    }
+
+    #[tokio::test]
+    async fn vector_ord (){
+        assert_eq!(true, vec![1,1] < vec![1,2]);
+        assert_eq!(true, vec![1,0,0,0,0,0,0,1] < vec![1,0,0,0,0,0,0,2]);
+        assert_eq!(true, vec![1,0,0,0,0,0,1,1] > vec![1,0,0,0,0,0,0,2]);
+        assert_eq!(true, vec![1,0,0,0,0,1,9,9] < vec![1,0,0,0,0,2,0,0]);
+        assert_eq!(true, vec![ScalarValue::Int32(Some(2)),Null,ScalarValue::Int32(Some(0))] < vec![ScalarValue::Int32(Some(2)),Null,ScalarValue::Int32(Some(1))]);
     }
 }
