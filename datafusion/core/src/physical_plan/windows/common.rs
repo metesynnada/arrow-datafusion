@@ -35,7 +35,6 @@ pub fn bisect_left_arrow(items: Vec<ArrayRef>, k: Vec<ArrayRef>) -> Option<usize
         .map(|arr| arr.get(0).unwrap())
         .collect_vec();
 
-    println!("{:?}", target_value);
     while low < high {
         let mid = ((high - low) / 2) + low;
         let val: Vec<&f64> = item_arrs

@@ -38,16 +38,8 @@ async fn main() -> Result<()> {
     // execute the query
     let df = ctx
         .sql(
-            "SELECT
-                  c9,
-                  row_number() OVER (PARTITION BY c2, c9) AS row_number,
-                  count(c3) OVER (PARTITION BY c2) AS count_c3,
-                  avg(c3) OVER (PARTITION BY c2) AS avg_c3_by_c2,
-                  sum(c3) OVER (PARTITION BY c2) AS sum_c3_by_c2,
-                  max(c3) OVER (PARTITION BY c2) AS max_c3_by_c2,
-                  min(c3) OVER (PARTITION BY c2) AS min_c3_by_c2
-                FROM aggregate_test_100
-                ORDER BY c9",
+            "SELECT SUM(c2) OVER(PARTITION BY c5, c7, c9 ORDER BY c3, c5 ROWS BETWEEN 1 PRECEDING AND 2 FOLLOWING) as summation20
+FROM aggregate_test_100",
         )
         .await?;
 

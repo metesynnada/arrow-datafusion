@@ -258,7 +258,6 @@ fn calculate_index_of_last_unequal_row(
         .iter()
         .map(|col| *col.get(idx).unwrap())
         .collect::<Vec<_>>();
-    println!("{:?}", range_columns);
     let end_range: Vec<f64> = current_row_values
         .iter()
         .map(|value| *value + (following as f64))
@@ -416,7 +415,6 @@ impl AggregateWindowAccumulator {
                 len,
                 i,
             );
-            println!("{:?}", value_slice);
             let update: Vec<ArrayRef> = value_slice
                 .iter()
                 .map(|v| v.slice(last_range.1, cur_range.1 - last_range.1))
@@ -425,8 +423,6 @@ impl AggregateWindowAccumulator {
                 .iter()
                 .map(|v| v.slice(last_range.0, cur_range.0 - last_range.0))
                 .collect();
-            println!("update: {:?}", &update);
-            println!("retract: {:?}", &retract);
             self.accumulator
                 .update_batch(&update)
                 .expect("TODO: panic message");
@@ -434,7 +430,6 @@ impl AggregateWindowAccumulator {
                 .retract_batch(&retract)
                 .expect("TODO: panic message");
             last_range = cur_range;
-            println!("state: {:?}", &self.accumulator.state());
             scalar_iter.push(self.accumulator.evaluate()?);
         }
 
@@ -459,7 +454,6 @@ impl AggregateWindowAccumulator {
             .iter()
             .map(|v| v.slice(value_range.start, len))
             .collect::<Vec<_>>();
-        println!("{:?}", value_slice);
         match (order_bys.len(), self.window_frame) {
             (0, None) => {
                 // // OVER() case
