@@ -34,50 +34,53 @@ use std::iter::IntoIterator;
 use std::ops::Range;
 use std::sync::Arc;
 use arrow::array::Array;
+use datafusion_common::bisect::{bisect_left_arrow, bisect_right_arrow};
+use datafusion_common::from_slice::FromSlice;
+use datafusion_expr::logical_plan::builder::union_with_alias;
 
 
-pub fn bisect_left_arrow(a: &Arc<dyn arrow::array::Array>, len: usize, target_value: f64) -> Option<usize> {
-    let mut low: usize = 0;
-    let mut high: usize = len as usize;
+// pub fn bisect_left_arrow(a: &Arc<dyn arrow::array::Array>, len: usize, target_value: f64) -> Option<usize> {
+//     let mut low: usize = 0;
+//     let mut high: usize = len as usize;
+//
+//     while low < high {
+//         let mid = ((high - low) / 2) + low;
+//         let mid_index = mid as usize;
+//         let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(mid);
+//         // let val = a.value(mid_index);
+//         // let val = &a[mid_index];
+//
+//
+//         // Search values that are greater than val - to right of current mid_index
+//         if val < target_value {
+//             low = mid + 1;
+//         } else{
+//             high = mid;
+//         }
+//     }
+//     Some(low)
+// }
 
-    while low < high {
-        let mid = ((high - low) / 2) + low;
-        let mid_index = mid as usize;
-        let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(mid);
-        // let val = a.value(mid_index);
-        // let val = &a[mid_index];
-
-
-        // Search values that are greater than val - to right of current mid_index
-        if val < target_value {
-            low = mid + 1;
-        } else{
-            high = mid;
-        }
-    }
-    Some(low)
-}
-
-pub fn bisect_right_arrow(a: &Arc<dyn arrow::array::Array>, len: usize, target_value: f64) -> Option<usize> {
-    let mut low: usize = 0;
-    let mut high: usize = len as usize;
-
-    while low < high {
-        let mid = ((high - low) / 2) + low;
-        let mid_index = mid as usize;
-        let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(mid);
-        // let val = &a[mid_index];
-
-
-        // Search values that are greater than val - to right of current mid_index
-        if val > target_value {
-            high = mid;
-        } else{
-            low = mid + 1;
-        }
-    }
-    Some(low)
-}
+// pub fn bisect_right_arrow(a: &Arc<dyn arrow::array::Array>, len: usize, target_value: f64) -> Option<usize> {
+//     let mut low: usize = 0;
+//     let mut high: usize = len as usize;
+//
+//     while low < high {
+//         let mid = ((high - low) / 2) + low;
+//         let mid_index = mid as usize;
+//         let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(mid);
+//         // let val = &a[mid_index];
+//
+//
+//         // Search values that are greater than val - to right of current mid_index
+//         if val > target_value {
+//             high = mid;
+//         } else{
+//             low = mid + 1;
+//         }
+//     }
+//     Some(low)
+// }
 
 pub fn bisect_left<T: std::cmp::PartialOrd>(a: &[T], len: usize, target_value: &T) -> Option<usize> {
     let mut low: usize = 0;
@@ -121,7 +124,7 @@ pub fn bisect_right<T: std::cmp::PartialOrd>(a: &[T], len: usize, target_value: 
 
 pub fn combine_ranges(value_ranges: &[Range<usize>]) -> Range<usize> {
     // make ranges single
-    let mut glob_range = Range { start: 0, end: 0 };
+    let mut glob_range = Range { start: usize::MAX, end: usize::MIN };
     for value_range in value_ranges {
         if value_range.start < glob_range.start {
             glob_range.start = value_range.start;
@@ -195,6 +198,7 @@ impl AggregateWindowExpr {
                     find_ranges_in_range(partition_range, &sort_partition_point);
                 let mut window_accumulators = self.create_accumulator()?;
                 println!("{:?}", &sort_partition_points);
+                println!("{:?}", &partition_points);
                 let res = window_accumulators.scan_peers(&values, &array_refs, &sort_partition_points);
                 // res.unwrap()
                 Ok(vec![res.unwrap()])
@@ -327,7 +331,7 @@ fn range_frame_to_scalar_bounds(window: WindowFrame) -> (f64, f64) {
     (preceding, following)
 }
 
-fn calc_cur_range(a: &Arc<dyn arrow::array::Array>, window: WindowFrame, len:usize, idx:usize) -> (usize, usize){
+fn calc_cur_range(a: &Arc<dyn arrow::array::Array>, window: WindowFrame, len:usize, idx:usize, value_range: &Range<usize>, order_bys: &Vec<ArrayRef>) -> (usize, usize){
     println!("{:?}", a);
     let start = match window.start_bound{
         // UNBOUNDED PRECEDING
@@ -335,24 +339,48 @@ fn calc_cur_range(a: &Arc<dyn arrow::array::Array>, window: WindowFrame, len:usi
             0
         }
         WindowFrameBound::Preceding(Some(n)) => {
-            let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
-            // let val = val as usize;
-            let start_range = val - (n as f64);
-            // let end_range = val + following;
+            let mut to_compare: Vec<ArrayRef> = vec![];
+            for order_by in order_bys.iter() {
+                let a = cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
+                to_compare.push(a);
+            }
 
-            let start = bisect_left_arrow(&a, len, start_range).unwrap();
-            start
+            let mut target: Vec<ArrayRef> = vec![];
+            for order_by in order_bys.iter() {
+                let a = &cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
+                let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
+                let start_range = val - (n as f64);
+                target.push(Arc::new(arrow::array::Float64Array::from_slice(&[start_range])));
+            }
+
+            let start = bisect_left_arrow(&to_compare, &target);
+            start.unwrap()
+
+            // let start = bisect_left_arrow(&a, len, start_range).unwrap();
+            // start
             // let mut end = bisect_right_arrow(&vec, len, end_range).unwrap();
         }
         WindowFrameBound::CurrentRow=>{
             let n = 0;
-            let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
-            // let val = val as usize;
-            let start_range = val - (n as f64);
-            // let end_range = val + following;
+            let mut to_compare: Vec<ArrayRef> = vec![];
+            for order_by in order_bys.iter() {
+                let a = cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
+                to_compare.push(a);
+            }
 
-            let start = bisect_left_arrow(&a, len, start_range).unwrap();
-            start
+            let mut target: Vec<ArrayRef> = vec![];
+            for order_by in order_bys.iter() {
+                let a = &cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
+                let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
+                let start_range = val - (n as f64);
+                target.push(Arc::new(arrow::array::Float64Array::from_slice(&[start_range])));
+            }
+
+            let start = bisect_left_arrow(&to_compare, &target);
+            start.unwrap()
+
+            // let start = bisect_left_arrow(&a, len, start_range).unwrap();
+            // start
         }
         _ => panic!("Invalid Frame bound")
     };
@@ -362,30 +390,49 @@ fn calc_cur_range(a: &Arc<dyn arrow::array::Array>, window: WindowFrame, len:usi
             len
         }
         WindowFrameBound::Following(Some(n)) => {
-            let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
-            println!("{:?}", a);
-            // let val = val as usize;
-            // let start_range = val - n;
-            let end_range = val + (n as f64);
 
-            // let start = bisect_left_arrow(&vec, len, start_range).unwrap();
-            let end = bisect_right_arrow(&a, len, end_range).unwrap();
-            end
+            let mut to_compare: Vec<ArrayRef> = vec![];
+            for order_by in order_bys.iter() {
+                let a = cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
+                to_compare.push(a);
+            }
+
+            let mut target: Vec<ArrayRef> = vec![];
+            for order_by in order_bys.iter() {
+                let a = &cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
+                let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
+                let start_range = val + (n as f64);
+                target.push(Arc::new(arrow::array::Float64Array::from_slice(&[start_range])));
+            }
+
+
+            let end = bisect_right_arrow(&to_compare, &target);
+            // let end = bisect_right_arrow(&a, len, end_range).unwrap();
+            end.unwrap()
         }
         WindowFrameBound::CurrentRow=>{
             let n = 0;
-            let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
-            // let val = val as usize;
-            // let start_range = val - n;
-            let end_range = val + (n as f64);
+            let mut to_compare: Vec<ArrayRef> = vec![];
+            for order_by in order_bys.iter() {
+                let a = cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
+                to_compare.push(a);
+            }
 
-            // let start = bisect_left_arrow(&vec, len, start_range).unwrap();
-            let end = bisect_right_arrow(&a, len, end_range).unwrap();
-            end
+            let mut target: Vec<ArrayRef> = vec![];
+            for order_by in order_bys.iter() {
+                let a = &cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
+                let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
+                let start_range = val + (n as f64);
+                target.push(Arc::new(arrow::array::Float64Array::from_slice(&[start_range])));
+            }
+
+            let end = bisect_right_arrow(&to_compare, &target);
+            // let end = bisect_right_arrow(&a, len, end_range).unwrap();
+            end.unwrap()
         }
         _ => panic!("Invalid Frame bound")
     };
-    (start, end)
+    (value_range.start+start, value_range.start+end)
 }
 
 /// Aggregate window accumulator utilizes the accumulator from aggregation and do a accumulative sum
@@ -439,12 +486,14 @@ impl AggregateWindowAccumulator {
             ));
         }
         let len = value_range.end - value_range.start;
-        let values = values
-            .iter()
-            .map(|v| {
-                v.slice(value_range.start, len)
-            })
-            .collect::<Vec<_>>();
+        // println!("{:?}", values);
+        // let value_slice = values
+        //     .iter()
+        //     .map(|v| {
+        //         v.slice(value_range.start, len)
+        //     })
+        //     .collect::<Vec<_>>();
+        // println!("{:?}", value_slice);
 
         let order_bys = order_bys
             .iter()
@@ -482,14 +531,16 @@ impl AggregateWindowAccumulator {
                     }
                     Some(window) => {
                         let mut scalar_iter = vec![];
-                        let mut last_range: (usize, usize) = (0, 0);
-                        let vec = &cast(&values[0], &arrow::datatypes::DataType::Float64)?;
-                        let use_during_range = &cast(&order_bys[1], &arrow::datatypes::DataType::Float64)?;
+                        let mut last_range: (usize, usize) = (value_range.start, value_range.start);
+
+                        let use_during_range = &cast(&order_bys[order_bys.len()-1], &arrow::datatypes::DataType::Float64)?;
                         println!("{:?}", order_bys);
                         println!("{:?}", order_bys.len());
-                        for i in 0..vec.len() {
-                            let cur_range = calc_cur_range(&use_during_range, window, len, i);
+                        for i in 0..len {
+                            let cur_range = calc_cur_range(&use_during_range, window, len, i, &value_range, &order_bys);
 
+                            println!("{:?}", cur_range);
+                            println!("{:?}", last_range);
                             let update: Vec<ArrayRef> = values.iter().map(|v| {
                                 v.slice(last_range.1, cur_range.1 - last_range.1)
                             }).collect();
