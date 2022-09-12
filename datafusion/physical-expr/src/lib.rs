@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+extern crate core;
+
 pub mod aggregate;
 pub mod array_expressions;
 pub mod conditional_expressions;
@@ -48,5 +50,3 @@ pub use physical_expr::PhysicalExpr;
 pub use planner::create_physical_expr;
 pub use scalar_function::ScalarFunctionExpr;
 pub use sort_expr::PhysicalSortExpr;
-
-

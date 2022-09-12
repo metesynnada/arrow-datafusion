@@ -20,11 +20,16 @@
 use crate::window::partition_evaluator::find_ranges_in_range;
 use crate::{expressions::PhysicalSortExpr, PhysicalExpr};
 use crate::{window::WindowExpr, AggregateExpr};
+use arrow::array::{Array, Float64Array};
 use arrow::compute::{cast, concat};
+use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use arrow::{array::ArrayRef, datatypes::Field};
-use datafusion_common::{DataFusionError, ScalarValue};
+use datafusion_common::bisect::{bisect_left_arrow, bisect_right_arrow};
+use datafusion_common::from_slice::FromSlice;
 use datafusion_common::Result;
+use datafusion_common::{DataFusionError, ScalarValue};
+use datafusion_expr::logical_plan::builder::union_with_alias;
 use datafusion_expr::{Accumulator, WindowFrameBound};
 use datafusion_expr::{WindowFrame, WindowFrameUnits};
 use std::any::Any;
@@ -33,11 +38,6 @@ use std::fmt::Display;
 use std::iter::IntoIterator;
 use std::ops::Range;
 use std::sync::Arc;
-use arrow::array::Array;
-use datafusion_common::bisect::{bisect_left_arrow, bisect_right_arrow};
-use datafusion_common::from_slice::FromSlice;
-use datafusion_expr::logical_plan::builder::union_with_alias;
-
 
 // pub fn bisect_left_arrow(a: &Arc<dyn arrow::array::Array>, len: usize, target_value: f64) -> Option<usize> {
 //     let mut low: usize = 0;
@@ -82,7 +82,11 @@ use datafusion_expr::logical_plan::builder::union_with_alias;
 //     Some(low)
 // }
 
-pub fn bisect_left<T: std::cmp::PartialOrd>(a: &[T], len: usize, target_value: &T) -> Option<usize> {
+pub fn bisect_left<T: std::cmp::PartialOrd>(
+    a: &[T],
+    len: usize,
+    target_value: &T,
+) -> Option<usize> {
     let mut low: usize = 0;
     let mut high: usize = len as usize;
 
@@ -91,18 +95,21 @@ pub fn bisect_left<T: std::cmp::PartialOrd>(a: &[T], len: usize, target_value: &
         let mid_index = mid as usize;
         let val = &a[mid_index];
 
-
         // Search values that are greater than val - to right of current mid_index
         if val < target_value {
             low = mid + 1;
-        } else{
+        } else {
             high = mid;
         }
     }
     Some(low)
 }
 
-pub fn bisect_right<T: std::cmp::PartialOrd>(a: &[T], len: usize, target_value: &T) -> Option<usize> {
+pub fn bisect_right<T: std::cmp::PartialOrd>(
+    a: &[T],
+    len: usize,
+    target_value: &T,
+) -> Option<usize> {
     let mut low: usize = 0;
     let mut high: usize = len as usize;
 
@@ -111,11 +118,10 @@ pub fn bisect_right<T: std::cmp::PartialOrd>(a: &[T], len: usize, target_value: 
         let mid_index = mid as usize;
         let val = &a[mid_index];
 
-
         // Search values that are greater than val - to right of current mid_index
         if val > target_value {
             high = mid;
-        } else{
+        } else {
             low = mid + 1;
         }
     }
@@ -124,7 +130,10 @@ pub fn bisect_right<T: std::cmp::PartialOrd>(a: &[T], len: usize, target_value: 
 
 pub fn combine_ranges(value_ranges: &[Range<usize>]) -> Range<usize> {
     // make ranges single
-    let mut glob_range = Range { start: usize::MAX, end: usize::MIN };
+    let mut glob_range = Range {
+        start: usize::MAX,
+        end: usize::MIN,
+    };
     for value_range in value_ranges {
         if value_range.start < glob_range.start {
             glob_range.start = value_range.start;
@@ -170,97 +179,19 @@ impl AggregateWindowExpr {
     /// create a new accumulator based on the underlying aggregation function
     fn create_accumulator(&self) -> Result<AggregateWindowAccumulator> {
         let accumulator = self.aggregate.create_accumulator()?;
-        let window_frame= self.window_frame;
+        let window_frame = self.window_frame;
         let order_by = self.order_by().to_vec();
-        Ok(AggregateWindowAccumulator { accumulator, window_frame, order_by })
-    }
-
-    /// peer based evaluation based on the fact that batch is pre-sorted given the sort columns
-    /// and then per partition point we'll evaluate the peer group (e.g. SUM or MAX gives the same
-    /// results for peers) and concatenate the results.
-    fn peer_based_evaluate(&self, batch: &RecordBatch) -> Result<ArrayRef> {
-        let num_rows = batch.num_rows();
-        let partition_points =
-            self.evaluate_partition_points(num_rows, &self.partition_columns(batch)?)?;
-        // let sort_partition_points = self.evaluate_partition_points(num_rows, &self.sort_columns(batch)?)?;
-        let values = self.evaluate_args(batch)?;
-
-        let columns = self.sort_columns(batch)?;
-        let array_refs: Vec<&ArrayRef> = columns.iter().map(| s | &s.values).collect();
-        // Sort values, this will make the same partitions consecutive.
-        let sort_partition_point =
-            self.evaluate_partition_points(num_rows, &columns)?;
-        println!("{:?}", values);
-        let results = partition_points
-            .iter()
-            .map(|partition_range| {
-                let sort_partition_points =
-                    find_ranges_in_range(partition_range, &sort_partition_point);
-                let mut window_accumulators = self.create_accumulator()?;
-                println!("{:?}", &sort_partition_points);
-                println!("{:?}", &partition_points);
-                let res = window_accumulators.scan_peers(&values, &array_refs, &sort_partition_points);
-                // res.unwrap()
-                Ok(vec![res.unwrap()])
-
-                // sort_partition_points
-                //     .iter()
-                //     .map(|range| window_accumulators.scan_peers(&values, range))
-                //     .collect::<Result<Vec<_>>>()
-            })
-            .collect::<Result<Vec<Vec<ArrayRef>>>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<ArrayRef>>();
-        let results = results.iter().map(|i| i.as_ref()).collect::<Vec<_>>();
-        concat(&results).map_err(DataFusionError::ArrowError)
-    }
-
-    fn group_based_evaluate(&self, _batch: &RecordBatch) -> Result<ArrayRef> {
-        Err(DataFusionError::NotImplemented(format!(
-            "Group based evaluation for {} is not yet implemented",
-            self.name()
-        )))
-    }
-
-    fn row_based_evaluate(&self, batch: &RecordBatch) -> Result<ArrayRef> {
-        let num_rows = batch.num_rows();
-        let partition_points =
-            self.evaluate_partition_points(num_rows, &self.partition_columns(batch)?)?;
-        // Get necessary column.
-        let values = self.evaluate_args(batch)?;
-
-        let columns = self.sort_columns(batch)?;
-        let array_refs: Vec<&ArrayRef> = columns.iter().map(| s | &s.values).collect();
-        // Sort values, this will make the same partitions consecutive.
-        let sort_partition_points =
-            self.evaluate_partition_points(num_rows, &columns)?;
-
-        let results = partition_points
-            .iter()
-            .map(|partition_range| {
-                let sort_partition_points =
-                    find_ranges_in_range(partition_range, &sort_partition_points);
-
-                let mut window_accumulators = self.create_accumulator()?;
-
-                let res = window_accumulators.scan_peers(&values,&array_refs, &sort_partition_points);
-                // res.unwrap()
-                Ok(vec![res.unwrap()])
-
-                // sort_partition_points
-                //     .iter()
-                //     .map(|range| {window_accumulators.scan_peers(&values, range)})
-                //     .collect::<Result<Vec<_>>>()
-            })
-            .collect::<Result<Vec<Vec<ArrayRef>>>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<ArrayRef>>();
-        let results = results.iter().map(|i| i.as_ref()).collect::<Vec<_>>();
-        concat(&results).map_err(DataFusionError::ArrowError)
+        Ok(AggregateWindowAccumulator {
+            accumulator,
+            window_frame,
+            order_by,
+        })
     }
 }
+
+/// peer based evaluation based on the fact that batch is pre-sorted given the sort columns
+/// and then per partition point we'll evaluate the peer group (e.g. SUM or MAX gives the same
+/// results for peers) and concatenate the results.
 
 impl WindowExpr for AggregateWindowExpr {
     /// Return a reference to Any that can be used for downcasting
@@ -280,13 +211,33 @@ impl WindowExpr for AggregateWindowExpr {
         self.aggregate.expressions()
     }
 
-    /// evaluate the window function values against the batch
     fn evaluate(&self, batch: &RecordBatch) -> Result<ArrayRef> {
-        match self.evaluation_mode() {
-            WindowFrameUnits::Range => self.peer_based_evaluate(batch),
-            WindowFrameUnits::Rows => self.row_based_evaluate(batch),
-            WindowFrameUnits::Groups => self.group_based_evaluate(batch),
-        }
+        let num_rows = batch.num_rows();
+        let partition_points =
+            self.evaluate_partition_points(num_rows, &self.partition_columns(batch)?)?;
+        // let sort_partition_points = self.evaluate_partition_points(num_rows, &self.sort_columns(batch)?)?;
+        let values = self.evaluate_args(batch)?;
+
+        let columns = self.sort_columns(batch)?;
+        let array_refs: Vec<&ArrayRef> = columns.iter().map(|s| &s.values).collect();
+        // Sort values, this will make the same partitions consecutive.
+        let results = partition_points
+            .iter()
+            .map(|partition_range| {
+                let mut window_accumulators = self.create_accumulator()?;
+                let res = window_accumulators.scan_peers(
+                    &values,
+                    &array_refs,
+                    &partition_range,
+                );
+                Ok(vec![res.unwrap()])
+            })
+            .collect::<Result<Vec<Vec<ArrayRef>>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<ArrayRef>>();
+        let results = results.iter().map(|i| i.as_ref()).collect::<Vec<_>>();
+        concat(&results).map_err(DataFusionError::ArrowError)
     }
 
     fn partition_by(&self) -> &[Arc<dyn PhysicalExpr>] {
@@ -298,141 +249,97 @@ impl WindowExpr for AggregateWindowExpr {
     }
 }
 
-
-
-fn row_frame_to_scalar_bounds(window_frame: &Option<WindowFrame>) -> (usize, usize){
-    let res = window_frame.unwrap();
-    let preceding: usize = match window_frame.unwrap().start_bound {
-        WindowFrameBound::Preceding(None) => usize::try_from(0).unwrap(),
-        WindowFrameBound::Preceding(Some(n)) => usize::try_from(n).unwrap(),
-        _ => panic!("sa")
-    };
-
-    let following: usize = match window_frame.unwrap().end_bound {
-        WindowFrameBound::CurrentRow => usize::try_from(0).unwrap(),
-        WindowFrameBound::Following(None) => usize::try_from(0).unwrap(),
-        WindowFrameBound::Following(Some(n)) => usize::try_from(n).unwrap(),
-        _ => panic!("sa")
-    };
-    (preceding, following)
+fn calculate_index_of_last_unequal_row(
+    range_columns: &Vec<&[f64]>,
+    following: usize,
+    idx: usize,
+) -> usize {
+    let current_row_values: Vec<f64> = range_columns
+        .iter()
+        .map(|col| *col.get(idx).unwrap())
+        .collect::<Vec<_>>();
+    println!("{:?}", range_columns);
+    let end_range: Vec<f64> = current_row_values
+        .iter()
+        .map(|value| *value + (following as f64))
+        .collect::<Vec<_>>();
+    let end = bisect_right_arrow(&range_columns, end_range).unwrap();
+    end
 }
 
-fn range_frame_to_scalar_bounds(window: WindowFrame) -> (f64, f64) {
-    let preceding = match window.start_bound {
-        WindowFrameBound::Preceding(None) => 0 as f64,
-        WindowFrameBound::Preceding(Some(n)) => n as f64,
-        _ => panic!("sa")
-    };
-    let following = match window.end_bound {
-        WindowFrameBound::Following(None) => 0 as f64,
-        WindowFrameBound::Following(Some(n)) => n as f64,
-        _ => panic!("sa")
-    };
-    (preceding, following)
+fn calculate_index_of_first_unequal_row(
+    range_columns: &Vec<&[f64]>,
+    preceding: usize,
+    idx: usize,
+) -> usize {
+    let current_row_values: Vec<&f64> = range_columns
+        .iter()
+        .map(|col| col.get(idx).unwrap())
+        .collect::<Vec<_>>();
+    let start_range: Vec<f64> = current_row_values
+        .iter()
+        .map(|value| *value - (preceding as f64))
+        .collect::<Vec<_>>();
+    let start = bisect_left_arrow(&range_columns, start_range).unwrap();
+    start
 }
 
-fn calc_cur_range(a: &Arc<dyn arrow::array::Array>, window: WindowFrame, len:usize, idx:usize, value_range: &Range<usize>, order_bys: &Vec<ArrayRef>) -> (usize, usize){
-    println!("{:?}", a);
-    let start = match window.start_bound{
-        // UNBOUNDED PRECEDING
-        WindowFrameBound::Preceding(None) => {
-            0
+// We use start and end bounds to calculate current row's starting and ending range.
+// For O
+fn calculate_current_window(
+    window_frame: WindowFrame,
+    range_columns: &Vec<&[f64]>,
+    len: usize,
+    idx: usize,
+) -> (usize, usize) {
+    match window_frame.units {
+        WindowFrameUnits::Range => {
+            let start = match window_frame.start_bound {
+                WindowFrameBound::Preceding(Some(n)) => {
+                    calculate_index_of_first_unequal_row(&range_columns, n as usize, idx)
+                }
+                WindowFrameBound::CurrentRow => {
+                    calculate_index_of_first_unequal_row(&range_columns, 0, idx)
+                }
+                // UNBOUNDED PRECEDING
+                WindowFrameBound::Preceding(None) => 0,
+                _ => panic!("sa"),
+            };
+            let end = match window_frame.end_bound {
+                WindowFrameBound::Following(Some(n)) => {
+                    calculate_index_of_last_unequal_row(&range_columns, n as usize, idx)
+                }
+                WindowFrameBound::CurrentRow => {
+                    calculate_index_of_last_unequal_row(&range_columns, 0, idx)
+                }
+                // UNBOUNDED FOLLOWING
+                WindowFrameBound::Following(None) => len,
+                _ => panic!("sa"),
+            };
+            (start, end)
         }
-        WindowFrameBound::Preceding(Some(n)) => {
-            let mut to_compare: Vec<ArrayRef> = vec![];
-            for order_by in order_bys.iter() {
-                let a = cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
-                to_compare.push(a);
-            }
-
-            let mut target: Vec<ArrayRef> = vec![];
-            for order_by in order_bys.iter() {
-                let a = &cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
-                let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
-                let start_range = val - (n as f64);
-                target.push(Arc::new(arrow::array::Float64Array::from_slice(&[start_range])));
-            }
-
-            let start = bisect_left_arrow(&to_compare, &target);
-            start.unwrap()
-
-            // let start = bisect_left_arrow(&a, len, start_range).unwrap();
-            // start
-            // let mut end = bisect_right_arrow(&vec, len, end_range).unwrap();
+        WindowFrameUnits::Rows => {
+            let start = match window_frame.start_bound {
+                WindowFrameBound::Preceding(Some(n)) => match idx >= n as usize {
+                    true => idx - n as usize,
+                    false => 0,
+                },
+                WindowFrameBound::CurrentRow => idx,
+                // UNBOUNDED PRECEDING
+                WindowFrameBound::Preceding(None) => 0,
+                _ => panic!("sa"),
+            };
+            let end = match window_frame.end_bound {
+                WindowFrameBound::Following(Some(n)) => min(idx + n as usize + 1, len),
+                WindowFrameBound::CurrentRow => idx + 1,
+                // UNBOUNDED FOLLOWING
+                WindowFrameBound::Following(None) => len,
+                _ => panic!("sa"),
+            };
+            (start, end)
         }
-        WindowFrameBound::CurrentRow=>{
-            let n = 0;
-            let mut to_compare: Vec<ArrayRef> = vec![];
-            for order_by in order_bys.iter() {
-                let a = cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
-                to_compare.push(a);
-            }
-
-            let mut target: Vec<ArrayRef> = vec![];
-            for order_by in order_bys.iter() {
-                let a = &cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
-                let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
-                let start_range = val - (n as f64);
-                target.push(Arc::new(arrow::array::Float64Array::from_slice(&[start_range])));
-            }
-
-            let start = bisect_left_arrow(&to_compare, &target);
-            start.unwrap()
-
-            // let start = bisect_left_arrow(&a, len, start_range).unwrap();
-            // start
-        }
-        _ => panic!("Invalid Frame bound")
-    };
-    let end = match window.end_bound{
-        // UNBOUNDED PRECEDING
-        WindowFrameBound::Following(None) => {
-            len
-        }
-        WindowFrameBound::Following(Some(n)) => {
-
-            let mut to_compare: Vec<ArrayRef> = vec![];
-            for order_by in order_bys.iter() {
-                let a = cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
-                to_compare.push(a);
-            }
-
-            let mut target: Vec<ArrayRef> = vec![];
-            for order_by in order_bys.iter() {
-                let a = &cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
-                let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
-                let start_range = val + (n as f64);
-                target.push(Arc::new(arrow::array::Float64Array::from_slice(&[start_range])));
-            }
-
-
-            let end = bisect_right_arrow(&to_compare, &target);
-            // let end = bisect_right_arrow(&a, len, end_range).unwrap();
-            end.unwrap()
-        }
-        WindowFrameBound::CurrentRow=>{
-            let n = 0;
-            let mut to_compare: Vec<ArrayRef> = vec![];
-            for order_by in order_bys.iter() {
-                let a = cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
-                to_compare.push(a);
-            }
-
-            let mut target: Vec<ArrayRef> = vec![];
-            for order_by in order_bys.iter() {
-                let a = &cast(&order_by, &arrow::datatypes::DataType::Float64).unwrap();
-                let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(idx);
-                let start_range = val + (n as f64);
-                target.push(Arc::new(arrow::array::Float64Array::from_slice(&[start_range])));
-            }
-
-            let end = bisect_right_arrow(&to_compare, &target);
-            // let end = bisect_right_arrow(&a, len, end_range).unwrap();
-            end.unwrap()
-        }
-        _ => panic!("Invalid Frame bound")
-    };
-    (value_range.start+start, value_range.start+end)
+        WindowFrameUnits::Groups => panic!("sa"),
+    }
 }
 
 /// Aggregate window accumulator utilizes the accumulator from aggregation and do a accumulative sum
@@ -441,184 +348,152 @@ fn calc_cur_range(a: &Arc<dyn arrow::array::Array>, window: WindowFrame, len:usi
 struct AggregateWindowAccumulator {
     accumulator: Box<dyn Accumulator>,
     window_frame: Option<WindowFrame>,
-    order_by: Vec<PhysicalSortExpr>
+    order_by: Vec<PhysicalSortExpr>,
 }
 
 impl AggregateWindowAccumulator {
     /// scan one peer group of values (as arguments to window function) given by the value_range
     /// and return evaluation result that are of the same number of rows.
     ///
-    fn scan_peers(&mut self,
-                  values: &[ArrayRef],
-                  order_bys: &Vec<&ArrayRef>,
-                  value_ranges: &[Range<usize>]) -> Result<ArrayRef> {
-        match self.window_frame{
-            None => self.scan_peers_range(values,order_bys, value_ranges),
-            Some(value) => match value.units {
-                WindowFrameUnits::Range => self.scan_peers_range(values, order_bys, value_ranges),
-                WindowFrameUnits::Rows => self.scan_peers_row(values, value_ranges),
-                WindowFrameUnits::Groups => self.scan_peers_group(values, value_ranges),
-            }
+    ///
+    fn implicit_order_by_window() -> WindowFrame {
+        // OVER(ORDER BY <field>)  case
+        WindowFrame {
+            units: WindowFrameUnits::Range,
+            start_bound: WindowFrameBound::Preceding(None),
+            end_bound: WindowFrameBound::Following(Some(0)),
         }
     }
 
-    fn scan_peers_group(
+    fn calculate_whole_table(
         &mut self,
-        _values: &[ArrayRef],
-        _value_range: &[Range<usize>],
+        value_slice: &Vec<ArrayRef>,
+        len: usize,
     ) -> Result<ArrayRef> {
-        Err(DataFusionError::NotImplemented(format!(
-            "Group based evaluation for is not yet implemented",
-        )))
+        self.accumulator.update_batch(&value_slice)?;
+        let value = self.accumulator.evaluate()?;
+        Ok(value.to_array_of_size(len))
     }
-    fn scan_peers_range(
+
+    fn calculate_running_window(
+        &mut self,
+        value_slice: &Vec<ArrayRef>,
+        order_bys: &Vec<&ArrayRef>,
+        value_range: &Range<usize>,
+    ) -> Result<ArrayRef> {
+        let len = value_range.end - value_range.start;
+        let order_columns: Vec<ArrayRef> = order_bys
+            .iter()
+            .map(|v| v.slice(value_range.start, value_range.end - value_range.start))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|array| cast(&array, &DataType::Float64).unwrap())
+            .collect::<Vec<_>>();
+        let range_columns = order_columns
+            .iter()
+            .map(|item| {
+                item.as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap()
+                    .values()
+            })
+            .collect::<Vec<_>>();
+
+        let updated_zero_offset_value_range = Range {
+            start: 0,
+            end: value_range.end - value_range.start,
+        };
+        let mut scalar_iter = vec![];
+        let mut last_range: (usize, usize) = (
+            updated_zero_offset_value_range.start,
+            updated_zero_offset_value_range.start,
+        );
+
+        for i in 0..len {
+            let cur_range = calculate_current_window(
+                self.window_frame.unwrap(),
+                &range_columns,
+                len,
+                i,
+            );
+            println!("{:?}", value_slice);
+            let update: Vec<ArrayRef> = value_slice
+                .iter()
+                .map(|v| v.slice(last_range.1, cur_range.1 - last_range.1))
+                .collect();
+            let retract: Vec<ArrayRef> = value_slice
+                .iter()
+                .map(|v| v.slice(last_range.0, cur_range.0 - last_range.0))
+                .collect();
+            println!("update: {:?}", &update);
+            println!("retract: {:?}", &retract);
+            self.accumulator
+                .update_batch(&update)
+                .expect("TODO: panic message");
+            self.accumulator
+                .retract_batch(&retract)
+                .expect("TODO: panic message");
+            last_range = cur_range;
+            println!("state: {:?}", &self.accumulator.state());
+            scalar_iter.push(self.accumulator.evaluate()?);
+        }
+
+        let array = ScalarValue::iter_to_array(scalar_iter.into_iter());
+        // res.push(array)
+        array
+    }
+
+    fn scan_peers(
         &mut self,
         values: &[ArrayRef],
         order_bys: &Vec<&ArrayRef>,
-        value_ranges: &[Range<usize>],
+        value_range: &Range<usize>,
     ) -> Result<ArrayRef> {
-
-        let value_range = combine_ranges(value_ranges);
-
         if value_range.is_empty() {
             return Err(DataFusionError::Internal(
                 "Value range cannot be empty".to_owned(),
             ));
         }
         let len = value_range.end - value_range.start;
-        // println!("{:?}", values);
-        // let value_slice = values
-        //     .iter()
-        //     .map(|v| {
-        //         v.slice(value_range.start, len)
-        //     })
-        //     .collect::<Vec<_>>();
-        // println!("{:?}", value_slice);
-
-        let order_bys = order_bys
+        let value_slice = values
             .iter()
-            .map(|v| {
-                v.slice(value_range.start, len)
-            })
+            .map(|v| v.slice(value_range.start, len))
             .collect::<Vec<_>>();
-
-        match order_bys.len() {
-            0 => {
-                // // OVER() case and OVER(ORDER BY <field>) case
-                self.accumulator.update_batch(&values)?;
-                let value = self.accumulator.evaluate()?;
-                Ok(value.to_array_of_size(len))
+        println!("{:?}", value_slice);
+        match (order_bys.len(), self.window_frame) {
+            (0, None) => {
+                // // OVER() case
+                self.calculate_whole_table(&value_slice, len)
             }
-            _ => {
-                if self.window_frame.is_none() {
-                    // OVER(ORDER BY <field>)  case
-                    let res = WindowFrame {
-                        units: WindowFrameUnits::Range,
-                        start_bound: WindowFrameBound::Preceding(None),
-                        end_bound: WindowFrameBound::Following(Some(0)),
-                    };
+            (_n, None) => {
+                // // OVER(ORDER BY a) case
+                self.window_frame =
+                    Some(AggregateWindowAccumulator::implicit_order_by_window());
 
-                    self.window_frame = Some(res);
-
-                }
-
-                match self.window_frame {
-                    None => {
-                        // // OVER() case and OVER(ORDER BY <field>) case
-                        self.accumulator.update_batch(&values)?;
-                        let value = self.accumulator.evaluate()?;
-                        Ok(value.to_array_of_size(len))
+                self.calculate_running_window(&value_slice, order_bys, &value_range)
+            }
+            (0, Some(frame)) => {
+                match frame.units {
+                    WindowFrameUnits::Range => {
+                        // OVER(RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW )
+                        self.calculate_whole_table(&value_slice, len)
                     }
-                    Some(window) => {
-                        let mut scalar_iter = vec![];
-                        let mut last_range: (usize, usize) = (value_range.start, value_range.start);
-
-                        let use_during_range = &cast(&order_bys[order_bys.len()-1], &arrow::datatypes::DataType::Float64)?;
-                        println!("{:?}", order_bys);
-                        println!("{:?}", order_bys.len());
-                        for i in 0..len {
-                            let cur_range = calc_cur_range(&use_during_range, window, len, i, &value_range, &order_bys);
-
-                            println!("{:?}", cur_range);
-                            println!("{:?}", last_range);
-                            let update: Vec<ArrayRef> = values.iter().map(|v| {
-                                v.slice(last_range.1, cur_range.1 - last_range.1)
-                            }).collect();
-                            let retract: Vec<ArrayRef> = values.iter().map(|v| {
-                                v.slice(last_range.0, cur_range.0 - last_range.0)
-                            }).collect();
-                            println!("state: {:?}", &update);
-                            self.accumulator.update_batch(&update).expect("TODO: panic message");
-                            self.accumulator.retract_batch(&retract).expect("TODO: panic message");
-                            last_range = cur_range;
-                            println!("state: {:?}", &self.accumulator.state());
-                            scalar_iter.push(self.accumulator.evaluate()?);
-                        }
-
-                        let array = ScalarValue::iter_to_array(scalar_iter.into_iter());
-                        // res.push(array)
-                        array
+                    WindowFrameUnits::Rows => {
+                        // OVER(ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING )
+                        self.calculate_running_window(
+                            &value_slice,
+                            order_bys,
+                            &value_range,
+                        )
+                    }
+                    WindowFrameUnits::Groups => {
+                        Err(DataFusionError::Execution("sa".parse().unwrap()))
                     }
                 }
             }
-        }
-
-
-
-    }
-
-    fn scan_peers_row(
-        &mut self,
-        values: &[ArrayRef],
-        value_ranges: &[Range<usize>],
-    ) -> Result<ArrayRef> {
-        let mut vec = vec![];
-        for value_range in value_ranges {
-            if value_range.is_empty() {
-                return Err(DataFusionError::Internal(
-                    "Value range cannot be empty".to_owned(),
-                ));
+            (_n, _) => {
+                self.calculate_running_window(&value_slice, order_bys, &value_range)
             }
-            let len = value_range.end - value_range.start;
-            let values = values
-                .iter()
-                .map(|v| {
-                    v.slice(value_range.start, len)
-                })
-                .collect::<Vec<_>>();
-
-            let (preceding, following): (usize, usize) = row_frame_to_scalar_bounds(&self.window_frame);
-            let mut scalar_iter = vec![];
-            let mut last_range: (usize, usize) = (0, 0);
-            for i in 0..values[0].len() {
-                let mut start = match i >= preceding {
-                    true => i - preceding,
-                    false => 0
-                };
-                let mut end = min(i + following + 1, values[0].len());
-                let mut cur_range = (start, end);
-
-                let update: Vec<ArrayRef> = values.iter().map(|v| {
-                    v.slice(last_range.1, cur_range.1 - last_range.1)
-                }).collect();
-                let retract: Vec<ArrayRef> = values.iter().map(|v| {
-                    v.slice(last_range.0, cur_range.0 - last_range.0)
-                }).collect();
-
-                self.accumulator.update_batch(&update).expect("TODO: panic message");
-                self.accumulator.retract_batch(&retract).expect("TODO: panic message");
-                last_range = cur_range;
-                scalar_iter.push(self.accumulator.evaluate()?);
-            }
-
-            let array = ScalarValue::iter_to_array(scalar_iter.into_iter());
-            vec.push(array);
-            // array
-
         }
-        vec.pop().unwrap()
-        // Err(DataFusionError::Internal(
-        //     "Value range cannot be empty".to_owned(),
-        // ))
     }
 }

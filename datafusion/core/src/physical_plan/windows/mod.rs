@@ -37,8 +37,8 @@ use datafusion_physical_expr::window::BuiltInWindowFunctionExpr;
 use std::convert::TryInto;
 use std::sync::Arc;
 
-mod window_agg_exec;
 mod common;
+mod window_agg_exec;
 
 pub use datafusion_physical_expr::window::{
     AggregateWindowExpr, BuiltInWindowExpr, WindowExpr,
