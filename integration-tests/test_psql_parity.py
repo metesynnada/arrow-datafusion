@@ -78,14 +78,16 @@ def generate_csv_from_psql(fname: str):
 
 root = Path(os.path.dirname(__file__)) / "sqls"
 test_files = set(root.glob("*.sql"))
-
+print(test_files)
 
 class TestPsqlParity:
     def test_tests_count(self):
         assert len(test_files) == 23, "tests are missed"
 
-    @pytest.mark.parametrize("fname", test_files)
+    @pytest.mark.parametrize("fname", test_files, ids=str)
     def test_sql_file(self, fname):
+        if "simple_window_partition_aggregation" in str(fname):
+            print("sa")
         datafusion_output = pd.read_csv(io.BytesIO(generate_csv_from_datafusion(fname)))
         psql_output = pd.read_csv(io.BytesIO(generate_csv_from_psql(fname)))
         np.testing.assert_allclose(datafusion_output, psql_output, equal_nan=True)
