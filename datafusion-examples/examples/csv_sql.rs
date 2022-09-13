@@ -39,7 +39,8 @@ async fn main() -> Result<()> {
     let df = ctx
         .sql(
             "SELECT
-        SUM(c2) OVER(ORDER BY c5 ROWS BETWEEN 3 PRECEDING AND 2 PRECEDING) as summation20 from test",
+        c13, CORR(c2, c3) OVER(ORDER BY c13 ROWS 3 PRECEDING) as corr3
+FROM test",
         )
         .await?;
 

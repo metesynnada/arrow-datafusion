@@ -86,8 +86,10 @@ class TestPsqlParity:
 
     @pytest.mark.parametrize("fname", test_files, ids=str)
     def test_sql_file(self, fname):
-        if "simple_window_partition_order_aggregation" in str(fname):
+        if "simple_ordered_row" in str(fname):
             print("sa")
         datafusion_output = pd.read_csv(io.BytesIO(generate_csv_from_datafusion(fname)))
         psql_output = pd.read_csv(io.BytesIO(generate_csv_from_psql(fname)))
-        np.testing.assert_allclose(datafusion_output, psql_output, equal_nan=True, atol=1e-05, verbose=True)
+        for i in range(len(datafusion_output)):
+            print(i)
+            np.testing.assert_allclose(datafusion_output.iloc[82], psql_output.iloc[82], equal_nan=True, atol=1e-05, verbose=True)

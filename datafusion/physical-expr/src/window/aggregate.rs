@@ -183,11 +183,13 @@ impl AggregateWindowExpr {
         let window_frame = self.window_frame;
         let order_by = self.order_by().to_vec();
         let partition_by = self.partition_by().to_vec();
+        let field = self.aggregate.field().unwrap();
         Ok(AggregateWindowAccumulator {
             accumulator,
             window_frame,
             order_by,
             partition_by,
+            field,
         })
     }
 }
@@ -286,9 +288,24 @@ fn calculate_index_of_first_unequal_row(
     start
 }
 
-fn get_none_type(value: ScalarValue) -> ScalarValue {
-    match  { }
+fn get_none_type(field: &Field) -> ScalarValue {
+    match field.data_type() {
+        DataType::Int64 => ScalarValue::Int64(None),
+        DataType::Int8 => ScalarValue::Int8(None),
+        DataType::Int16 => ScalarValue::Int16(None),
+        DataType::Int32 => ScalarValue::Int32(None),
+        DataType::Int64 => ScalarValue::Int64(None),
+        DataType::UInt8 => ScalarValue::UInt8(None),
+        DataType::UInt16 => ScalarValue::UInt16(None),
+        DataType::UInt64 => ScalarValue::UInt64(None),
+        DataType::Float32 => ScalarValue::Float32(None),
+        DataType::Float64 => ScalarValue::Float64(None),
+        _ => {
+            panic!("not implemented");
+        }
+    }
 }
+
 // We use start and end bounds to calculate current row's starting and ending range.
 // For O
 fn calculate_current_window(
@@ -366,6 +383,7 @@ struct AggregateWindowAccumulator {
     window_frame: Option<WindowFrame>,
     order_by: Vec<PhysicalSortExpr>,
     partition_by: Vec<Arc<dyn PhysicalExpr>>,
+    field: Field,
 }
 
 impl AggregateWindowAccumulator {
@@ -434,7 +452,7 @@ impl AggregateWindowAccumulator {
                 i,
             );
             match cur_range.1 - cur_range.0 {
-                0 => get_none_type();
+                0 => scalar_iter.push(get_none_type(&self.field)),
                 _ => {
                     let update: Vec<ArrayRef> = value_slice
                         .iter()
