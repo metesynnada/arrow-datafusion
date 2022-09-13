@@ -2,17 +2,16 @@ use crate::from_slice::FromSlice;
 use arrow::array::{ArrayRef, Float32Array, Float64Array};
 use arrow::compute::cast;
 use arrow::datatypes::DataType;
-use itertools::{multizip, Itertools, Tuples};
+use itertools::Itertools;
 use std::sync::Arc;
 
-fn get_index_slice(input: Vec<&[f64]>, idx: usize) -> Vec<&f64> {
-    input.iter().map(|arr| arr.get(idx).unwrap()).collect_vec()
-}
+use crate::{DataFusionError, Result};
+
 
 pub fn bisect_left_arrow(
     item_arrs: &Vec<&[f64]>,
     target_value: Vec<f64>,
-) -> Option<usize> {
+) -> Result<usize> {
     let mut low: usize = 0;
     let mut high: usize = item_arrs[0].len();
     while low < high {
@@ -28,13 +27,13 @@ pub fn bisect_left_arrow(
             high = mid;
         }
     }
-    Some(low)
+    Ok(low)
 }
 
 pub fn bisect_right_arrow(
     item_arrs: &Vec<&[f64]>,
     target_value: Vec<f64>,
-) -> Option<usize> {
+) -> Result<usize> {
     let mut low: usize = 0;
     let mut high: usize = item_arrs[0].len();
     while low < high {
@@ -50,7 +49,7 @@ pub fn bisect_right_arrow(
             low = mid + 1;
         }
     }
-    Some(low)
+    Ok(low)
 }
 
 fn main() {

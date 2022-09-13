@@ -40,94 +40,6 @@ use std::iter::IntoIterator;
 use std::ops::Range;
 use std::sync::Arc;
 
-// pub fn bisect_left_arrow(a: &Arc<dyn arrow::array::Array>, len: usize, target_value: f64) -> Option<usize> {
-//     let mut low: usize = 0;
-//     let mut high: usize = len as usize;
-//
-//     while low < high {
-//         let mid = ((high - low) / 2) + low;
-//         let mid_index = mid as usize;
-//         let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(mid);
-//         // let val = a.value(mid_index);
-//         // let val = &a[mid_index];
-//
-//
-//         // Search values that are greater than val - to right of current mid_index
-//         if val < target_value {
-//             low = mid + 1;
-//         } else{
-//             high = mid;
-//         }
-//     }
-//     Some(low)
-// }
-
-// pub fn bisect_right_arrow(a: &Arc<dyn arrow::array::Array>, len: usize, target_value: f64) -> Option<usize> {
-//     let mut low: usize = 0;
-//     let mut high: usize = len as usize;
-//
-//     while low < high {
-//         let mid = ((high - low) / 2) + low;
-//         let mid_index = mid as usize;
-//         let val = a.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(mid);
-//         // let val = &a[mid_index];
-//
-//
-//         // Search values that are greater than val - to right of current mid_index
-//         if val > target_value {
-//             high = mid;
-//         } else{
-//             low = mid + 1;
-//         }
-//     }
-//     Some(low)
-// }
-
-pub fn bisect_left<T: std::cmp::PartialOrd>(
-    a: &[T],
-    len: usize,
-    target_value: &T,
-) -> Option<usize> {
-    let mut low: usize = 0;
-    let mut high: usize = len as usize;
-
-    while low < high {
-        let mid = ((high - low) / 2) + low;
-        let mid_index = mid as usize;
-        let val = &a[mid_index];
-
-        // Search values that are greater than val - to right of current mid_index
-        if val < target_value {
-            low = mid + 1;
-        } else {
-            high = mid;
-        }
-    }
-    Some(low)
-}
-
-pub fn bisect_right<T: std::cmp::PartialOrd>(
-    a: &[T],
-    len: usize,
-    target_value: &T,
-) -> Option<usize> {
-    let mut low: usize = 0;
-    let mut high: usize = len as usize;
-
-    while low < high {
-        let mid = ((high - low) / 2) + low;
-        let mid_index = mid as usize;
-        let val = &a[mid_index];
-
-        // Search values that are greater than val - to right of current mid_index
-        if val > target_value {
-            high = mid;
-        } else {
-            low = mid + 1;
-        }
-    }
-    Some(low)
-}
 
 pub fn combine_ranges(value_ranges: &[Range<usize>]) -> Range<usize> {
     // make ranges single
@@ -258,7 +170,7 @@ fn calculate_index_of_last_unequal_row(
     range_columns: &Vec<&[f64]>,
     following: f64,
     idx: usize,
-) -> usize {
+) -> Result<usize> {
     let current_row_values: Vec<f64> = range_columns
         .iter()
         .map(|col| *col.get(idx).unwrap())
@@ -267,15 +179,15 @@ fn calculate_index_of_last_unequal_row(
         .iter()
         .map(|value| *value + following)
         .collect::<Vec<_>>();
-    let end = bisect_right_arrow(&range_columns, end_range).unwrap();
-    end
+    let end = bisect_right_arrow(&range_columns, end_range)?;
+    Ok(end)
 }
 
 fn calculate_index_of_first_unequal_row(
     range_columns: &Vec<&[f64]>,
     preceding: f64,
     idx: usize,
-) -> usize {
+) -> Result<usize> {
     let current_row_values: Vec<&f64> = range_columns
         .iter()
         .map(|col| col.get(idx).unwrap())
@@ -284,24 +196,26 @@ fn calculate_index_of_first_unequal_row(
         .iter()
         .map(|value| *value - preceding)
         .collect::<Vec<_>>();
-    let start = bisect_left_arrow(&range_columns, start_range).unwrap();
-    start
+    let start = bisect_left_arrow(&range_columns, start_range)?;
+    Ok(start)
 }
 
-fn get_none_type(field: &Field) -> ScalarValue {
+fn get_none_type(field: &Field) -> Result<ScalarValue> {
     match field.data_type() {
-        DataType::Int64 => ScalarValue::Int64(None),
-        DataType::Int8 => ScalarValue::Int8(None),
-        DataType::Int16 => ScalarValue::Int16(None),
-        DataType::Int32 => ScalarValue::Int32(None),
-        DataType::Int64 => ScalarValue::Int64(None),
-        DataType::UInt8 => ScalarValue::UInt8(None),
-        DataType::UInt16 => ScalarValue::UInt16(None),
-        DataType::UInt64 => ScalarValue::UInt64(None),
-        DataType::Float32 => ScalarValue::Float32(None),
-        DataType::Float64 => ScalarValue::Float64(None),
+        DataType::Int64 => Ok(ScalarValue::Int64(None)),
+        DataType::Int8 => Ok(ScalarValue::Int8(None)),
+        DataType::Int16 => Ok(ScalarValue::Int16(None)),
+        DataType::Int32 => Ok(ScalarValue::Int32(None)),
+        DataType::UInt8 => Ok(ScalarValue::UInt8(None)),
+        DataType::UInt16 => Ok(ScalarValue::UInt16(None)),
+        DataType::UInt64 => Ok(ScalarValue::UInt64(None)),
+        DataType::Float32 => Ok(ScalarValue::Float32(None)),
+        DataType::Float64 => Ok(ScalarValue::Float64(None)),
         _ => {
-            panic!("not implemented");
+            Err(DataFusionError::Internal(format!(
+                "None type not supported for type '{:?}'",
+                field.data_type()
+            )))
         }
     }
 }
@@ -313,10 +227,12 @@ fn calculate_current_window(
     range_columns: &Vec<&[f64]>,
     len: usize,
     idx: usize,
-) -> (usize, usize) {
+) -> Result<(usize, usize)> {
     match window_frame.units {
         WindowFrameUnits::Range => {
             let start = match window_frame.start_bound {
+                // UNBOUNDED PRECEDING case
+                WindowFrameBound::Preceding(None) => Ok(0),
                 WindowFrameBound::Preceding(Some(n)) => {
                     calculate_index_of_first_unequal_row(&range_columns, n as f64, idx)
                 }
@@ -326,52 +242,60 @@ fn calculate_current_window(
                 WindowFrameBound::Following(Some(n)) => {
                     calculate_index_of_first_unequal_row(&range_columns, -(n as f64), idx)
                 }
-                // UNBOUNDED PRECEDING
-                WindowFrameBound::Preceding(None) => 0,
-                _ => panic!("sa"),
+                _ => Err(DataFusionError::Internal(format!(
+                    "Error during parsing arguments of '{:?}'", window_frame
+                )))
             };
             let end = match window_frame.end_bound {
+                WindowFrameBound::Preceding(Some(n)) => {
+                    calculate_index_of_last_unequal_row(&range_columns, -(n as f64), idx)
+                }
                 WindowFrameBound::Following(Some(n)) => {
                     calculate_index_of_last_unequal_row(&range_columns, n as f64, idx)
                 }
                 WindowFrameBound::CurrentRow => {
                     calculate_index_of_last_unequal_row(&range_columns, 0., idx)
                 }
-                WindowFrameBound::Preceding(Some(n)) => {
-                    calculate_index_of_last_unequal_row(&range_columns, -(n as f64), idx)
-                }
                 // UNBOUNDED FOLLOWING
-                WindowFrameBound::Following(None) => len,
-                _ => panic!("sa"),
+                WindowFrameBound::Following(None) => Ok(len),
+                _ => Err(DataFusionError::Internal(format!(
+                    "Error during parsing arguments of '{:?}'", window_frame
+                )))
             };
-            (start, end)
+            Ok((start?, end?))
         }
         WindowFrameUnits::Rows => {
             let start = match window_frame.start_bound {
-                WindowFrameBound::Preceding(Some(n)) => match idx >= n as usize {
-                    true => idx - n as usize,
-                    false => 0,
-                },
-                WindowFrameBound::CurrentRow => idx,
-                WindowFrameBound::Following(Some(n)) => min(idx + n as usize, len),
                 // UNBOUNDED PRECEDING
-                WindowFrameBound::Preceding(None) => 0,
-                _ => panic!("sa"),
+                WindowFrameBound::Preceding(None) => Ok(0),
+                WindowFrameBound::Preceding(Some(n)) => match idx >= n as usize {
+                    true => Ok(idx - n as usize),
+                    false => Ok(0),
+                },
+                WindowFrameBound::CurrentRow => Ok(idx),
+                WindowFrameBound::Following(Some(n)) => Ok(min(idx + n as usize, len)),
+                _ => Err(DataFusionError::Internal(format!(
+                    "Error during parsing arguments of '{:?}'", window_frame
+                )))
             };
             let end = match window_frame.end_bound {
-                WindowFrameBound::Following(Some(n)) => min(idx + n as usize + 1, len),
-                WindowFrameBound::CurrentRow => idx + 1,
-                // UNBOUNDED FOLLOWING
-                WindowFrameBound::Following(None) => len,
                 WindowFrameBound::Preceding(Some(n)) => match idx >= n as usize {
-                    true => idx - n as usize + 1,
-                    false => 0,
+                    true => Ok(idx - n as usize + 1),
+                    false => Ok(0),
                 },
-                _ => panic!("sa"),
+                WindowFrameBound::CurrentRow => Ok(idx + 1),
+                WindowFrameBound::Following(Some(n)) =>Ok(min(idx + n as usize + 1, len)),
+                // UNBOUNDED FOLLOWING
+                WindowFrameBound::Following(None) => Ok(len),
+                _ => Err(DataFusionError::Internal(format!(
+                    "Error during parsing arguments of '{:?}'", window_frame
+                )))
             };
-            (start, end)
+            Ok((start?, end?))
         }
-        WindowFrameUnits::Groups => panic!("sa"),
+        WindowFrameUnits::Groups => Err(DataFusionError::Internal(format!(
+            "Window frame for groups is not implemented"
+        )))
     }
 }
 
@@ -450,9 +374,9 @@ impl AggregateWindowAccumulator {
                 &range_columns,
                 len,
                 i,
-            );
+            )?;
             match cur_range.1 - cur_range.0 {
-                0 => scalar_iter.push(get_none_type(&self.field)),
+                0 => scalar_iter.push(get_none_type(&self.field)?),
                 _ => {
                     let update: Vec<ArrayRef> = value_slice
                         .iter()
@@ -463,11 +387,9 @@ impl AggregateWindowAccumulator {
                         .map(|v| v.slice(last_range.0, cur_range.0 - last_range.0))
                         .collect();
                     self.accumulator
-                        .update_batch(&update)
-                        .expect("TODO: panic message");
+                        .update_batch(&update)?;
                     self.accumulator
-                        .retract_batch(&retract)
-                        .expect("TODO: panic message");
+                        .retract_batch(&retract)?;
                     scalar_iter.push(self.accumulator.evaluate()?)
                 }
             }
@@ -527,9 +449,9 @@ impl AggregateWindowAccumulator {
                             &value_range,
                         )
                     }
-                    WindowFrameUnits::Groups => {
-                        Err(DataFusionError::Execution("sa".parse().unwrap()))
-                    }
+                    WindowFrameUnits::Groups => Err(DataFusionError::Internal(format!(
+                        "Window frame for groups is not implemented"
+                    )))
                 }
             }
             (_n, _) => self.calculate_running_window(
