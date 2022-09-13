@@ -380,12 +380,6 @@ impl Accumulator for CovarianceAccumulator {
         };
 
         if count <= 1 {
-            return Err(DataFusionError::Internal(
-                "At least two values are needed to calculate covariance".to_string(),
-            ));
-        }
-
-        if self.count == 0 {
             Ok(ScalarValue::Float64(None))
         } else {
             Ok(ScalarValue::Float64(Some(self.algo_const / count as f64)))
