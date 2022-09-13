@@ -40,7 +40,6 @@ use std::iter::IntoIterator;
 use std::ops::Range;
 use std::sync::Arc;
 
-
 pub fn combine_ranges(value_ranges: &[Range<usize>]) -> Range<usize> {
     // make ranges single
     let mut glob_range = Range {
@@ -166,6 +165,11 @@ impl WindowExpr for AggregateWindowExpr {
     }
 }
 
+/// This method gets vector of columns and finds the last value that lower than the target value in a sorted array.
+/// E.g
+/// target = 3
+/// arr = [1,1,1,2,2,3,3,4]
+/// returns 6
 fn calculate_index_of_last_unequal_row(
     range_columns: &Vec<&[f64]>,
     following: f64,
@@ -182,7 +186,11 @@ fn calculate_index_of_last_unequal_row(
     let end = bisect_right_arrow(&range_columns, end_range)?;
     Ok(end)
 }
-
+/// This method gets vector of columns and finds the first value that greater than the target value in a sorted array.
+/// E.g
+/// target = 3
+/// arr = [1,1,1,2,2,3,3,4]
+/// returns 5
 fn calculate_index_of_first_unequal_row(
     range_columns: &Vec<&[f64]>,
     preceding: f64,
@@ -199,7 +207,7 @@ fn calculate_index_of_first_unequal_row(
     let start = bisect_left_arrow(&range_columns, start_range)?;
     Ok(start)
 }
-
+/// If we need a Null in returns, thi function provides it.
 fn get_none_type(field: &Field) -> Result<ScalarValue> {
     match field.data_type() {
         DataType::Int64 => Ok(ScalarValue::Int64(None)),
@@ -211,12 +219,10 @@ fn get_none_type(field: &Field) -> Result<ScalarValue> {
         DataType::UInt64 => Ok(ScalarValue::UInt64(None)),
         DataType::Float32 => Ok(ScalarValue::Float32(None)),
         DataType::Float64 => Ok(ScalarValue::Float64(None)),
-        _ => {
-            Err(DataFusionError::Internal(format!(
-                "None type not supported for type '{:?}'",
-                field.data_type()
-            )))
-        }
+        _ => Err(DataFusionError::Internal(format!(
+            "None type not supported for type '{:?}'",
+            field.data_type()
+        ))),
     }
 }
 
@@ -243,8 +249,9 @@ fn calculate_current_window(
                     calculate_index_of_first_unequal_row(&range_columns, -(n as f64), idx)
                 }
                 _ => Err(DataFusionError::Internal(format!(
-                    "Error during parsing arguments of '{:?}'", window_frame
-                )))
+                    "Error during parsing arguments of '{:?}'",
+                    window_frame
+                ))),
             };
             let end = match window_frame.end_bound {
                 WindowFrameBound::Preceding(Some(n)) => {
@@ -259,8 +266,9 @@ fn calculate_current_window(
                 // UNBOUNDED FOLLOWING
                 WindowFrameBound::Following(None) => Ok(len),
                 _ => Err(DataFusionError::Internal(format!(
-                    "Error during parsing arguments of '{:?}'", window_frame
-                )))
+                    "Error during parsing arguments of '{:?}'",
+                    window_frame
+                ))),
             };
             Ok((start?, end?))
         }
@@ -275,8 +283,9 @@ fn calculate_current_window(
                 WindowFrameBound::CurrentRow => Ok(idx),
                 WindowFrameBound::Following(Some(n)) => Ok(min(idx + n as usize, len)),
                 _ => Err(DataFusionError::Internal(format!(
-                    "Error during parsing arguments of '{:?}'", window_frame
-                )))
+                    "Error during parsing arguments of '{:?}'",
+                    window_frame
+                ))),
             };
             let end = match window_frame.end_bound {
                 WindowFrameBound::Preceding(Some(n)) => match idx >= n as usize {
@@ -284,18 +293,21 @@ fn calculate_current_window(
                     false => Ok(0),
                 },
                 WindowFrameBound::CurrentRow => Ok(idx + 1),
-                WindowFrameBound::Following(Some(n)) =>Ok(min(idx + n as usize + 1, len)),
+                WindowFrameBound::Following(Some(n)) => {
+                    Ok(min(idx + n as usize + 1, len))
+                }
                 // UNBOUNDED FOLLOWING
                 WindowFrameBound::Following(None) => Ok(len),
                 _ => Err(DataFusionError::Internal(format!(
-                    "Error during parsing arguments of '{:?}'", window_frame
-                )))
+                    "Error during parsing arguments of '{:?}'",
+                    window_frame
+                ))),
             };
             Ok((start?, end?))
         }
         WindowFrameUnits::Groups => Err(DataFusionError::Internal(format!(
             "Window frame for groups is not implemented"
-        )))
+        ))),
     }
 }
 
@@ -386,10 +398,8 @@ impl AggregateWindowAccumulator {
                         .iter()
                         .map(|v| v.slice(last_range.0, cur_range.0 - last_range.0))
                         .collect();
-                    self.accumulator
-                        .update_batch(&update)?;
-                    self.accumulator
-                        .retract_batch(&retract)?;
+                    self.accumulator.update_batch(&update)?;
+                    self.accumulator.retract_batch(&retract)?;
                     scalar_iter.push(self.accumulator.evaluate()?)
                 }
             }
@@ -451,7 +461,7 @@ impl AggregateWindowAccumulator {
                     }
                     WindowFrameUnits::Groups => Err(DataFusionError::Internal(format!(
                         "Window frame for groups is not implemented"
-                    )))
+                    ))),
                 }
             }
             (_n, _) => self.calculate_running_window(

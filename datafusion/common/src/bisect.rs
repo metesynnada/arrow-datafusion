@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use crate::{DataFusionError, Result};
 
-
 pub fn bisect_left_arrow(
     item_arrs: &Vec<&[f64]>,
     target_value: Vec<f64>,
@@ -52,53 +51,6 @@ pub fn bisect_right_arrow(
     Ok(low)
 }
 
-fn main() {
-    let arrays: Vec<ArrayRef> = vec![
-        Arc::new(Float32Array::from_slice(&[5.0, 7.0, 9., 10.])),
-        Arc::new(Float32Array::from_slice(&[2.0, 3.0, 4.0])),
-        Arc::new(Float32Array::from_slice(&[5.0, 7.0, 10.])),
-        Arc::new(Float32Array::from_slice(&[5.0, 7.0, 10.])),
-    ];
-    let order_columns: Vec<ArrayRef> = arrays
-        .iter()
-        .map(|array| cast(&array, &DataType::Float64).unwrap())
-        .collect();
-    let search_tuple: Vec<ArrayRef> = vec![
-        Arc::new(Float32Array::from_slice(&[8.0])),
-        Arc::new(Float32Array::from_slice(&[3.0])),
-        Arc::new(Float32Array::from_slice(&[8.0])),
-        Arc::new(Float32Array::from_slice(&[8.0])),
-    ];
-    let k: Vec<ArrayRef> = search_tuple
-        .iter()
-        .map(|array| cast(&array, &DataType::Float64).unwrap())
-        .collect();
-    let item_arrs = order_columns
-        .iter()
-        .map(|item| {
-            item.as_any()
-                .downcast_ref::<Float64Array>()
-                .unwrap()
-                .values()
-        })
-        .collect_vec();
-    let target_value = k
-        .iter()
-        .map(|item| {
-            item.as_any()
-                .downcast_ref::<Float64Array>()
-                .unwrap()
-                .values()
-        })
-        .collect_vec()
-        .iter()
-        .map(|arr| *arr.get(0).unwrap())
-        .collect_vec();
-    let res: usize = bisect_left_arrow(&item_arrs, target_value).unwrap();
-    // define data in two partitions
-    assert_eq!(res, 2);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,8 +68,53 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn test_me() {
-        main();
+    async fn test_bisect_left() {
+        let arrays: Vec<ArrayRef> = vec![
+            Arc::new(Float32Array::from_slice(&[5.0, 7.0, 9., 10.])),
+            Arc::new(Float32Array::from_slice(&[2.0, 3.0, 4.0])),
+            Arc::new(Float32Array::from_slice(&[5.0, 7.0, 10.])),
+            Arc::new(Float32Array::from_slice(&[5.0, 7.0, 10.])),
+        ];
+        let order_columns: Vec<ArrayRef> = arrays
+            .iter()
+            .map(|array| cast(&array, &DataType::Float64).unwrap())
+            .collect();
+        let search_tuple: Vec<ArrayRef> = vec![
+            Arc::new(Float32Array::from_slice(&[8.0])),
+            Arc::new(Float32Array::from_slice(&[3.0])),
+            Arc::new(Float32Array::from_slice(&[8.0])),
+            Arc::new(Float32Array::from_slice(&[8.0])),
+        ];
+        let k: Vec<ArrayRef> = search_tuple
+            .iter()
+            .map(|array| cast(&array, &DataType::Float64).unwrap())
+            .collect();
+        let item_arrs = order_columns
+            .iter()
+            .map(|item| {
+                item.as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap()
+                    .values()
+            })
+            .collect_vec();
+        let target_value = k
+            .iter()
+            .map(|item| {
+                item.as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap()
+                    .values()
+            })
+            .collect_vec()
+            .iter()
+            .map(|arr| *arr.get(0).unwrap())
+            .collect_vec();
+        let res: usize = bisect_left_arrow(&item_arrs, target_value.clone()).unwrap();
+        // define data in two partitions
+        assert_eq!(res, 2);
+        let res: usize = bisect_right_arrow(&item_arrs, target_value.clone()).unwrap();
+        assert_eq!(res, 3);
     }
 
     #[tokio::test]
