@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
 
     // register csv file with the execution context
     ctx.register_csv(
-        "aggregate_test_100",
+        "test",
         &format!("{}/csv/aggregate_test_100.csv", testdata),
         CsvReadOptions::new(),
     )
@@ -38,8 +38,8 @@ async fn main() -> Result<()> {
     // execute the query
     let df = ctx
         .sql(
-            "SELECT SUM(c2) OVER(PARTITION BY c5, c7, c9 ORDER BY c3, c5 ROWS BETWEEN 1 PRECEDING AND 2 FOLLOWING) as summation20
-FROM aggregate_test_100",
+            "SELECT
+        SUM(c2) OVER(ORDER BY c5 ROWS BETWEEN 3 PRECEDING AND 2 PRECEDING) as summation20 from test",
         )
         .await?;
 

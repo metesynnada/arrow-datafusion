@@ -2566,6 +2566,7 @@ mod tests {
         assert_eq!(expected, data_type.try_into().unwrap())
     }
 
+    #[ignore]
     #[test]
     fn size_of_scalar() {
         // Since ScalarValues are used in a non trivial number of places,

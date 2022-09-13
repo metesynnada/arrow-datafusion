@@ -813,35 +813,4 @@ mod tests {
         assert_batches_eq!(expected, &batches);
         Ok(())
     }
-    #[tokio::test]
-    async fn test_csv() -> Result<()> {
-        // create local execution context
-        let ctx = SessionContext::new();
-
-        let df = ctx.register_csv("test",
-                                  &"/Users/metehanyildirim/Documents/Synnada/arrow-datafusion/testing/csv/aggregate_test_100.csv",
-                                  CsvReadOptions::new(),
-        )
-            .await;
-        // execute the query
-        let df = ctx
-            .sql(
-                "SELECT
-                  c9,
-                  row_number() OVER (PARTITION BY c2, c9) AS row_number,
-                  count(c3) OVER (PARTITION BY c2) AS count_c3,
-                  avg(c3) OVER (PARTITION BY c2) AS avg_c3_by_c2,
-                  sum(c3) OVER (PARTITION BY c2) AS sum_c3_by_c2,
-                  max(c3) OVER (PARTITION BY c2) AS max_c3_by_c2,
-                  min(c3) OVER (PARTITION BY c2) AS min_c3_by_c2
-                FROM test
-                ORDER BY c9",
-            )
-            .await?;
-
-        // print the results
-        df.show().await?;
-
-        Ok(())
-    }
 }

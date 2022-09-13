@@ -30,6 +30,7 @@ use datafusion_common::from_slice::FromSlice;
 use datafusion_common::Result;
 use datafusion_common::{DataFusionError, ScalarValue};
 use datafusion_expr::logical_plan::builder::union_with_alias;
+use datafusion_expr::AggregateState::Scalar;
 use datafusion_expr::{Accumulator, WindowFrameBound};
 use datafusion_expr::{WindowFrame, WindowFrameUnits};
 use std::any::Any;
@@ -181,10 +182,12 @@ impl AggregateWindowExpr {
         let accumulator = self.aggregate.create_accumulator()?;
         let window_frame = self.window_frame;
         let order_by = self.order_by().to_vec();
+        let partition_by = self.partition_by().to_vec();
         Ok(AggregateWindowAccumulator {
             accumulator,
             window_frame,
             order_by,
+            partition_by,
         })
     }
 }
@@ -251,7 +254,7 @@ impl WindowExpr for AggregateWindowExpr {
 
 fn calculate_index_of_last_unequal_row(
     range_columns: &Vec<&[f64]>,
-    following: usize,
+    following: f64,
     idx: usize,
 ) -> usize {
     let current_row_values: Vec<f64> = range_columns
@@ -260,7 +263,7 @@ fn calculate_index_of_last_unequal_row(
         .collect::<Vec<_>>();
     let end_range: Vec<f64> = current_row_values
         .iter()
-        .map(|value| *value + (following as f64))
+        .map(|value| *value + following)
         .collect::<Vec<_>>();
     let end = bisect_right_arrow(&range_columns, end_range).unwrap();
     end
@@ -268,7 +271,7 @@ fn calculate_index_of_last_unequal_row(
 
 fn calculate_index_of_first_unequal_row(
     range_columns: &Vec<&[f64]>,
-    preceding: usize,
+    preceding: f64,
     idx: usize,
 ) -> usize {
     let current_row_values: Vec<&f64> = range_columns
@@ -277,12 +280,15 @@ fn calculate_index_of_first_unequal_row(
         .collect::<Vec<_>>();
     let start_range: Vec<f64> = current_row_values
         .iter()
-        .map(|value| *value - (preceding as f64))
+        .map(|value| *value - preceding)
         .collect::<Vec<_>>();
     let start = bisect_left_arrow(&range_columns, start_range).unwrap();
     start
 }
 
+fn get_none_type(value: ScalarValue) -> ScalarValue {
+    match  { }
+}
 // We use start and end bounds to calculate current row's starting and ending range.
 // For O
 fn calculate_current_window(
@@ -295,10 +301,13 @@ fn calculate_current_window(
         WindowFrameUnits::Range => {
             let start = match window_frame.start_bound {
                 WindowFrameBound::Preceding(Some(n)) => {
-                    calculate_index_of_first_unequal_row(&range_columns, n as usize, idx)
+                    calculate_index_of_first_unequal_row(&range_columns, n as f64, idx)
                 }
                 WindowFrameBound::CurrentRow => {
-                    calculate_index_of_first_unequal_row(&range_columns, 0, idx)
+                    calculate_index_of_first_unequal_row(&range_columns, 0., idx)
+                }
+                WindowFrameBound::Following(Some(n)) => {
+                    calculate_index_of_first_unequal_row(&range_columns, -(n as f64), idx)
                 }
                 // UNBOUNDED PRECEDING
                 WindowFrameBound::Preceding(None) => 0,
@@ -306,10 +315,13 @@ fn calculate_current_window(
             };
             let end = match window_frame.end_bound {
                 WindowFrameBound::Following(Some(n)) => {
-                    calculate_index_of_last_unequal_row(&range_columns, n as usize, idx)
+                    calculate_index_of_last_unequal_row(&range_columns, n as f64, idx)
                 }
                 WindowFrameBound::CurrentRow => {
-                    calculate_index_of_last_unequal_row(&range_columns, 0, idx)
+                    calculate_index_of_last_unequal_row(&range_columns, 0., idx)
+                }
+                WindowFrameBound::Preceding(Some(n)) => {
+                    calculate_index_of_last_unequal_row(&range_columns, -(n as f64), idx)
                 }
                 // UNBOUNDED FOLLOWING
                 WindowFrameBound::Following(None) => len,
@@ -324,6 +336,7 @@ fn calculate_current_window(
                     false => 0,
                 },
                 WindowFrameBound::CurrentRow => idx,
+                WindowFrameBound::Following(Some(n)) => min(idx + n as usize, len),
                 // UNBOUNDED PRECEDING
                 WindowFrameBound::Preceding(None) => 0,
                 _ => panic!("sa"),
@@ -333,6 +346,10 @@ fn calculate_current_window(
                 WindowFrameBound::CurrentRow => idx + 1,
                 // UNBOUNDED FOLLOWING
                 WindowFrameBound::Following(None) => len,
+                WindowFrameBound::Preceding(Some(n)) => match idx >= n as usize {
+                    true => idx - n as usize + 1,
+                    false => 0,
+                },
                 _ => panic!("sa"),
             };
             (start, end)
@@ -348,6 +365,7 @@ struct AggregateWindowAccumulator {
     accumulator: Box<dyn Accumulator>,
     window_frame: Option<WindowFrame>,
     order_by: Vec<PhysicalSortExpr>,
+    partition_by: Vec<Arc<dyn PhysicalExpr>>,
 }
 
 impl AggregateWindowAccumulator {
@@ -415,22 +433,27 @@ impl AggregateWindowAccumulator {
                 len,
                 i,
             );
-            let update: Vec<ArrayRef> = value_slice
-                .iter()
-                .map(|v| v.slice(last_range.1, cur_range.1 - last_range.1))
-                .collect();
-            let retract: Vec<ArrayRef> = value_slice
-                .iter()
-                .map(|v| v.slice(last_range.0, cur_range.0 - last_range.0))
-                .collect();
-            self.accumulator
-                .update_batch(&update)
-                .expect("TODO: panic message");
-            self.accumulator
-                .retract_batch(&retract)
-                .expect("TODO: panic message");
+            match cur_range.1 - cur_range.0 {
+                0 => get_none_type();
+                _ => {
+                    let update: Vec<ArrayRef> = value_slice
+                        .iter()
+                        .map(|v| v.slice(last_range.1, cur_range.1 - last_range.1))
+                        .collect();
+                    let retract: Vec<ArrayRef> = value_slice
+                        .iter()
+                        .map(|v| v.slice(last_range.0, cur_range.0 - last_range.0))
+                        .collect();
+                    self.accumulator
+                        .update_batch(&update)
+                        .expect("TODO: panic message");
+                    self.accumulator
+                        .retract_batch(&retract)
+                        .expect("TODO: panic message");
+                    scalar_iter.push(self.accumulator.evaluate()?)
+                }
+            }
             last_range = cur_range;
-            scalar_iter.push(self.accumulator.evaluate()?);
         }
 
         let array = ScalarValue::iter_to_array(scalar_iter.into_iter());
@@ -454,7 +477,9 @@ impl AggregateWindowAccumulator {
             .iter()
             .map(|v| v.slice(value_range.start, len))
             .collect::<Vec<_>>();
-        match (order_bys.len(), self.window_frame) {
+        let wanted_order_columns =
+            &order_bys[self.partition_by.len()..order_bys.len()].to_vec();
+        match (wanted_order_columns.len(), self.window_frame) {
             (0, None) => {
                 // // OVER() case
                 self.calculate_whole_table(&value_slice, len)
@@ -464,7 +489,11 @@ impl AggregateWindowAccumulator {
                 self.window_frame =
                     Some(AggregateWindowAccumulator::implicit_order_by_window());
 
-                self.calculate_running_window(&value_slice, order_bys, &value_range)
+                self.calculate_running_window(
+                    &value_slice,
+                    wanted_order_columns,
+                    &value_range,
+                )
             }
             (0, Some(frame)) => {
                 match frame.units {
@@ -485,9 +514,11 @@ impl AggregateWindowAccumulator {
                     }
                 }
             }
-            (_n, _) => {
-                self.calculate_running_window(&value_slice, order_bys, &value_range)
-            }
+            (_n, _) => self.calculate_running_window(
+                &value_slice,
+                wanted_order_columns,
+                &value_range,
+            ),
         }
     }
 }
