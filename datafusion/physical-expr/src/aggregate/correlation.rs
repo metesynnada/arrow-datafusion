@@ -179,7 +179,6 @@ impl Accumulator for CorrelationAccumulator {
         let stddev1 = self.stddev1.evaluate()?;
         let stddev2 = self.stddev2.evaluate()?;
         let eps = 1e-7;
-        println!("{:?}, {:?}, {:?}, {:?}", covar, stddev1, stddev2, eps);
         if let ScalarValue::Float64(Some(c)) = covar {
             if let ScalarValue::Float64(Some(s1)) = stddev1 {
                 if let ScalarValue::Float64(Some(s2)) = stddev2 {

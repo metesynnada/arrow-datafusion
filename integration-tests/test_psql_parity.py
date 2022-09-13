@@ -82,14 +82,21 @@ print(test_files)
 
 class TestPsqlParity:
     def test_tests_count(self):
-        assert len(test_files) == 23, "tests are missed"
+        assert len(test_files) == 25, "tests are missed"
 
     @pytest.mark.parametrize("fname", test_files, ids=str)
     def test_sql_file(self, fname):
-        if "simple_ordered_row" in str(fname):
-            print("sa")
+
         datafusion_output = pd.read_csv(io.BytesIO(generate_csv_from_datafusion(fname)))
         psql_output = pd.read_csv(io.BytesIO(generate_csv_from_psql(fname)))
-        for i in range(len(datafusion_output)):
-            print(i)
-            np.testing.assert_allclose(datafusion_output.iloc[82], psql_output.iloc[82], equal_nan=True, atol=1e-05, verbose=True)
+        filename = str(fname).split(os.sep)[-1].split(".")[0]
+        if filename in ["simple_ordered_row", "simple_window_range"]:
+            kwargs = {"rtol": 2e-05}
+        else:
+            kwargs = {}
+        np.testing.assert_allclose(datafusion_output, psql_output, equal_nan=True, verbose=True, **kwargs)
+
+
+        # for i in range(len(datafusion_output)):
+        #     print(i)
+        #     np.testing.assert_allclose(datafusion_output.iloc[i], psql_output.iloc[i], equal_nan=True, atol=1e-05, verbose=True)

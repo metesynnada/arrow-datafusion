@@ -15,7 +15,6 @@ pub fn bisect_left_arrow(
 ) -> Option<usize> {
     let mut low: usize = 0;
     let mut high: usize = item_arrs[0].len();
-    println!("{:?}", target_value);
     while low < high {
         let mid = ((high - low) / 2) + low;
         let val: Vec<f64> = item_arrs
@@ -40,7 +39,6 @@ pub fn bisect_right_arrow(
     let mut high: usize = item_arrs[0].len();
     while low < high {
         let mid = ((high - low) / 2) + low;
-        // println!("{:?}", item_arrs);
         let val: Vec<f64> = item_arrs
             .iter()
             .map(|arr| *arr.get(mid).unwrap())
