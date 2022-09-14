@@ -95,8 +95,3 @@ class TestPsqlParity:
         else:
             kwargs = {}
         np.testing.assert_allclose(datafusion_output, psql_output, equal_nan=True, verbose=True, **kwargs)
-
-
-        # for i in range(len(datafusion_output)):
-        #     print(i)
-        #     np.testing.assert_allclose(datafusion_output.iloc[i], psql_output.iloc[i], equal_nan=True, atol=1e-05, verbose=True)
