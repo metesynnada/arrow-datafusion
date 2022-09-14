@@ -141,11 +141,8 @@ impl WindowExpr for AggregateWindowExpr {
             .iter()
             .map(|partition_range| {
                 let mut window_accumulators = self.create_accumulator()?;
-                let res = window_accumulators.scan_peers(
-                    &values,
-                    &array_refs,
-                    &partition_range,
-                );
+                let res =
+                    window_accumulators.scan(&values, &array_refs, &partition_range);
                 Ok(vec![res.unwrap()])
             })
             .collect::<Result<Vec<Vec<ArrayRef>>>>()?
@@ -171,7 +168,7 @@ impl WindowExpr for AggregateWindowExpr {
 /// arr = [1,1,1,2,2,3,3,4]
 /// returns 6
 fn calculate_index_of_last_unequal_row(
-    range_columns: &Vec<&[f64]>,
+    range_columns: &&Vec<&[f64]>,
     following: f64,
     idx: usize,
 ) -> Result<usize> {
@@ -192,7 +189,7 @@ fn calculate_index_of_last_unequal_row(
 /// arr = [1,1,1,2,2,3,3,4]
 /// returns 5
 fn calculate_index_of_first_unequal_row(
-    range_columns: &Vec<&[f64]>,
+    range_columns: &&Vec<&[f64]>,
     preceding: f64,
     idx: usize,
 ) -> Result<usize> {
@@ -226,8 +223,8 @@ fn get_none_type(field: &Field) -> Result<ScalarValue> {
     }
 }
 
-// We use start and end bounds to calculate current row's starting and ending range.
-// For O
+/// We use start and end bounds to calculate current row's starting and ending range. This function
+// can be support different modes.
 fn calculate_current_window(
     window_frame: WindowFrame,
     range_columns: &Vec<&[f64]>,
@@ -312,7 +309,8 @@ fn calculate_current_window(
 }
 
 /// Aggregate window accumulator utilizes the accumulator from aggregation and do a accumulative sum
-/// across evaluation arguments based on peer equivalences.
+/// across evaluation arguments based on peer equivalences. It uses many information to calculate
+/// correct running window.
 #[derive(Debug)]
 struct AggregateWindowAccumulator {
     accumulator: Box<dyn Accumulator>,
@@ -323,10 +321,7 @@ struct AggregateWindowAccumulator {
 }
 
 impl AggregateWindowAccumulator {
-    /// scan one peer group of values (as arguments to window function) given by the value_range
-    /// and return evaluation result that are of the same number of rows.
-    ///
-    ///
+    /// An ORDER BY is
     fn implicit_order_by_window() -> WindowFrame {
         // OVER(ORDER BY <field>)  case
         WindowFrame {
@@ -335,7 +330,7 @@ impl AggregateWindowAccumulator {
             end_bound: WindowFrameBound::Following(Some(0)),
         }
     }
-
+    /// It calculates the whole aggregation result and copy into an array of table size.
     fn calculate_whole_table(
         &mut self,
         value_slice: &Vec<ArrayRef>,
@@ -346,6 +341,7 @@ impl AggregateWindowAccumulator {
         Ok(value.to_array_of_size(len))
     }
 
+    /// It calculates the running window logic.
     fn calculate_running_window(
         &mut self,
         value_slice: &Vec<ArrayRef>,
@@ -353,14 +349,12 @@ impl AggregateWindowAccumulator {
         value_range: &Range<usize>,
     ) -> Result<ArrayRef> {
         let len = value_range.end - value_range.start;
-        let order_columns: Vec<ArrayRef> = order_bys
+        let order_columns = order_bys
             .iter()
             .map(|v| v.slice(value_range.start, value_range.end - value_range.start))
-            .collect::<Vec<_>>()
-            .iter()
             .map(|array| cast(&array, &DataType::Float64).unwrap())
             .collect::<Vec<_>>();
-        let range_columns = order_columns
+        let cast_float64_order_columns = order_columns
             .iter()
             .map(|item| {
                 item.as_any()
@@ -369,26 +363,32 @@ impl AggregateWindowAccumulator {
                     .values()
             })
             .collect::<Vec<_>>();
-
         let updated_zero_offset_value_range = Range {
             start: 0,
             end: value_range.end - value_range.start,
         };
-        let mut scalar_iter = vec![];
+        let mut row_wise_results = vec![];
         let mut last_range: (usize, usize) = (
             updated_zero_offset_value_range.start,
             updated_zero_offset_value_range.start,
         );
 
+        /// We iterate each row to calculate its corresponding window. It is a running
+        /// window calculation. First, cur_range calculated, then it is compared with last_range.
+        /// We increment the accumulator by update and retract.
+        /// P.s: We did not implement retract_batch logic for all aggregators.
         for i in 0..len {
             let cur_range = calculate_current_window(
                 self.window_frame.unwrap(),
-                &range_columns,
+                &cast_float64_order_columns,
                 len,
                 i,
             )?;
+
             match cur_range.1 - cur_range.0 {
-                0 => scalar_iter.push(get_none_type(&self.field)?),
+                // We produce None if the window is empty.
+                0 => row_wise_results.push(get_none_type(&self.field)?),
+                // If the new window is not empty, we
                 _ => {
                     let update: Vec<ArrayRef> = value_slice
                         .iter()
@@ -400,18 +400,18 @@ impl AggregateWindowAccumulator {
                         .collect();
                     self.accumulator.update_batch(&update)?;
                     self.accumulator.retract_batch(&retract)?;
-                    scalar_iter.push(self.accumulator.evaluate()?)
+                    row_wise_results.push(self.accumulator.evaluate()?)
                 }
             }
             last_range = cur_range;
         }
 
-        let array = ScalarValue::iter_to_array(scalar_iter.into_iter());
+        let array = ScalarValue::iter_to_array(row_wise_results.into_iter());
         // res.push(array)
         array
     }
 
-    fn scan_peers(
+    fn scan(
         &mut self,
         values: &[ArrayRef],
         order_bys: &Vec<&ArrayRef>,
@@ -431,11 +431,12 @@ impl AggregateWindowAccumulator {
             &order_bys[self.partition_by.len()..order_bys.len()].to_vec();
         match (wanted_order_columns.len(), self.window_frame) {
             (0, None) => {
-                // // OVER() case
+                // OVER() case
                 self.calculate_whole_table(&value_slice, len)
             }
             (_n, None) => {
-                // // OVER(ORDER BY a) case
+                // OVER(ORDER BY a) case
+                // We create an implicit window for ORDER BY.
                 self.window_frame =
                     Some(AggregateWindowAccumulator::implicit_order_by_window());
 
@@ -464,6 +465,7 @@ impl AggregateWindowAccumulator {
                     ))),
                 }
             }
+            // OVER(ORDER BY a ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING )
             (_n, _) => self.calculate_running_window(
                 &value_slice,
                 wanted_order_columns,
